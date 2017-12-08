@@ -18,11 +18,13 @@
 #include "herder/Herder.h"
 #include "herder/HerderPersistence.h"
 #include "history/HistoryManager.h"
+#include "invariant/AccountSubEntriesCountIsValid.h"
 #include "invariant/BucketListIsConsistentWithDatabase.h"
 #include "invariant/CacheIsConsistentWithDatabase.h"
-#include "invariant/ChangedAccountsSubentriesCountIsValid.h"
+#include "invariant/ConservationOfLumens.h"
 #include "invariant/InvariantManager.h"
-#include "invariant/TotalCoinsEqualsBalancesPlusFeePool.h"
+#include "invariant/LedgerEntryIsValid.h"
+#include "invariant/MinimumAccountBalance.h"
 #include "ledger/LedgerManager.h"
 #include "main/CommandHandler.h"
 #include "main/ExternalQueue.h"
@@ -109,7 +111,7 @@ ApplicationImpl::initialize()
     mBucketManager = BucketManager::create(*this);
     mCatchupManager = CatchupManager::create(*this);
     mHistoryManager = HistoryManager::create(*this);
-    mInvariantManager = InvariantManager::create(*this);
+    mInvariantManager = createInvariantManager();
     mProcessManager = ProcessManager::create(*this);
     mCommandHandler = make_unique<CommandHandler>(*this);
     mWorkManager = WorkManager::create(*this);
@@ -117,9 +119,11 @@ ApplicationImpl::initialize()
     mStatusManager = make_unique<StatusManager>();
 
     BucketListIsConsistentWithDatabase::registerInvariant(*this);
+    AccountSubEntriesCountIsValid::registerInvariant(*this);
     CacheIsConsistentWithDatabase::registerInvariant(*this);
-    ChangedAccountsSubentriesCountIsValid::registerInvariant(*this);
-    TotalCoinsEqualsBalancesPlusFeePool::registerInvariant(*this);
+    ConservationOfLumens::registerInvariant(*this);
+    LedgerEntryIsValid::registerInvariant(*this);
+    MinimumAccountBalance::registerInvariant(*this);
     enableInvariantsFromConfig();
 
     if (!mConfig.NTP_SERVER.empty())
@@ -225,7 +229,10 @@ ApplicationImpl::getJsonInfo()
     info["ledger"]["closeTime"] =
         (int)lm.getLastClosedLedgerHeader().header.scpValue.closeTime;
     info["ledger"]["age"] = (int)lm.secondsSinceLastLedgerClose();
-    info["numPeers"] = (int)getOverlayManager().getPeers().size();
+    info["pending_peers_count"] =
+        (int)getOverlayManager().getPendingPeersCount();
+    info["authenticated_peers_count"] =
+        (int)getOverlayManager().getAuthenticatedPeersCount();
     info["network"] = getConfig().NETWORK_PASSPHRASE;
 
     auto& statusMessages = getStatusManager();
@@ -242,6 +249,12 @@ ApplicationImpl::getJsonInfo()
     if (q["slots"].size() != 0)
     {
         info["quorum"] = q["slots"];
+    }
+
+    Json::Value invariantFailures = getInvariantManager().getInformation();
+    if (!invariantFailures.empty())
+    {
+        info["invariant_failures"] = invariantFailures;
     }
 
     return root;
@@ -710,6 +723,12 @@ std::unique_ptr<Herder>
 ApplicationImpl::createHerder()
 {
     return Herder::create(*this);
+}
+
+std::unique_ptr<InvariantManager>
+ApplicationImpl::createInvariantManager()
+{
+    return InvariantManager::create(*this);
 }
 
 std::unique_ptr<OverlayManager>
