@@ -16,7 +16,7 @@ namespace stellar
 
 class CatchupConfiguration;
 class HistoryManager;
-struct LedgerCloseData;
+class LedgerCloseData;
 
 namespace historytestutils
 {
