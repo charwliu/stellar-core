@@ -789,10 +789,7 @@ LedgerManagerImpl::closeLedger(LedgerCloseData const& ledgerData)
     hm.logAndUpdatePublishStatus();
 
     // step 4
-    if (getState() != LM_CATCHING_UP_STATE)
-    {
-        mApp.getBucketManager().forgetUnreferencedBuckets();
-    }
+    mApp.getBucketManager().forgetUnreferencedBuckets();
 }
 
 void
@@ -981,12 +978,7 @@ LedgerManagerImpl::storeCurrentLedger()
     }
 
     // we will need these buckets after restart
-    for (auto const& bucket : has.allBuckets())
-    {
-        mApp.getBucketManager()
-            .getBucketByHash(hexToBin256(bucket))
-            ->setRetain(true);
-    }
+    mApp.getBucketManager().retainAll(has);
     mApp.getPersistentState().setState(PersistentState::kHistoryArchiveState,
                                        has.toString());
 }
