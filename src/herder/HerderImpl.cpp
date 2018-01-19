@@ -83,7 +83,7 @@ HerderImpl::HerderImpl(Application& app)
     , mSCPMetrics(app)
 {
     Hash hash = getSCP().getLocalNode()->getQuorumSetHash();
-    mPendingEnvelopes.addSCPQuorumSet(hash, 0,
+    mPendingEnvelopes.addSCPQuorumSet(hash,
                                       getSCP().getLocalNode()->getQuorumSet());
 }
 
@@ -171,6 +171,8 @@ void
 HerderImpl::valueExternalized(uint64 slotIndex, StellarValue const& value)
 {
     updateSCPCounters();
+
+    // called both here and at the end (this one is in case of an exception)
     trackingHeartBeat();
 
     if (Logging::logDebug("Herder"))
@@ -217,6 +219,10 @@ HerderImpl::valueExternalized(uint64 slotIndex, StellarValue const& value)
     }
 
     ledgerClosed();
+
+    // heart beat *after* doing all the work (ensures that we do not include
+    // the overhead of externalization in the way we track SCP)
+    trackingHeartBeat();
 }
 
 void
@@ -961,7 +967,7 @@ HerderImpl::restoreSCPState()
         for (auto const& qset : latestQSets)
         {
             Hash hash = sha256(xdr::xdr_to_opaque(qset));
-            mPendingEnvelopes.addSCPQuorumSet(hash, 0, qset);
+            mPendingEnvelopes.addSCPQuorumSet(hash, qset);
         }
         for (auto const& e : latestEnvs)
         {

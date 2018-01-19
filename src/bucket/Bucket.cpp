@@ -177,13 +177,14 @@ Bucket::OutputIterator::put(BucketEntry const& e)
     // Check to see if there's an existing buffered entry.
     if (mBuf)
     {
-        // mCmp(e, *mBuf) means e < *mBuf; this should never be true since
+        BucketEntryIdCmp cmp;
+        // cmp(e, *mBuf) means e < *mBuf; this should never be true since
         // it would mean that we're getting entries out of order.
-        assert(!mCmp(e, *mBuf));
+        assert(!cmp(e, *mBuf));
 
         // Check to see if the new entry should flush (greater identity), or
         // merely replace (same identity), the buffered entry.
-        if (mCmp(*mBuf, e))
+        if (cmp(*mBuf, e))
         {
             mOut.writeOne(*mBuf, mHasher.get(), &mBytesPut);
             mObjectsPut++;
@@ -314,33 +315,31 @@ Bucket::fresh(BucketManager& bucketManager,
 }
 
 inline void
-maybe_put(BucketEntryIdCmp const& cmp, Bucket::OutputIterator& out,
-          Bucket::InputIterator& in,
-          std::vector<Bucket::InputIterator>& shadowIterators)
+maybePut(Bucket::OutputIterator& out, BucketEntry const& entry,
+         std::vector<Bucket::InputIterator>& shadowIterators)
 {
+    BucketEntryIdCmp cmp;
     for (auto& si : shadowIterators)
     {
         // Advance the shadowIterator while it's less than the candidate
-        while (si && cmp(*si, *in))
+        while (si && cmp(*si, entry))
         {
             ++si;
         }
         // We have stepped si forward to the point that either si is exhausted,
-        // or else *si >= *in; we now check the opposite direction to see if we
-        // have equality.
-        if (si && !cmp(*in, *si))
+        // or else *si >= entry; we now check the opposite direction to see if
+        // we have equality.
+        if (si && !cmp(entry, *si))
         {
-            // If so, then *in is shadowed in at least one level and we will
+            // If so, then entry is shadowed in at least one level and we will
             // not be doing a 'put'; we return early. There is no need to
-            // advance
-            // the other iterators, they will advance as and if necessary in
-            // future
-            // calls to maybe_put.
+            // advance the other iterators, they will advance as and if
+            // necessary in future calls to maybePut.
             return;
         }
     }
     // Nothing shadowed.
-    out.put(*in);
+    out.put(entry);
 }
 
 std::shared_ptr<Bucket>
@@ -372,31 +371,31 @@ Bucket::merge(BucketManager& bucketManager,
         if (!ni)
         {
             // Out of new entries, take old entries.
-            maybe_put(cmp, out, oi, shadowIterators);
+            maybePut(out, *oi, shadowIterators);
             ++oi;
         }
         else if (!oi)
         {
             // Out of old entries, take new entries.
-            maybe_put(cmp, out, ni, shadowIterators);
+            maybePut(out, *ni, shadowIterators);
             ++ni;
         }
         else if (cmp(*oi, *ni))
         {
             // Next old-entry has smaller key, take it.
-            maybe_put(cmp, out, oi, shadowIterators);
+            maybePut(out, *oi, shadowIterators);
             ++oi;
         }
         else if (cmp(*ni, *oi))
         {
             // Next new-entry has smaller key, take it.
-            maybe_put(cmp, out, ni, shadowIterators);
+            maybePut(out, *ni, shadowIterators);
             ++ni;
         }
         else
         {
             // Old and new are for the same key, take new.
-            maybe_put(cmp, out, ni, shadowIterators);
+            maybePut(out, *ni, shadowIterators);
             ++oi;
             ++ni;
         }
