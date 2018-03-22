@@ -25,8 +25,7 @@ namespace stellar
 
 using namespace std;
 
-Simulation::Simulation(Mode mode, Hash const& networkID,
-                       std::function<Config()> confGen)
+Simulation::Simulation(Mode mode, Hash const& networkID, ConfigGen confGen)
     : LoadGenerator(networkID)
     , mVirtualClockMode(mode != OVER_TCP)
     , mClock(mVirtualClockMode ? VirtualClock::VIRTUAL_TIME
@@ -175,7 +174,7 @@ Simulation::dropConnection(NodeID initiator, NodeID acceptor)
             auto& cAcceptor = mNodes[acceptor].mApp->getConfig();
 
             auto peer = iApp->getOverlayManager().getConnectedPeer(
-                "127.0.0.1", cAcceptor.PEER_PORT);
+                PeerBareAddress{"127.0.0.1", cAcceptor.PEER_PORT});
             if (peer)
             {
                 peer->drop(true);
@@ -229,9 +228,8 @@ Simulation::addTCPConnection(NodeID initiator, NodeID acceptor)
     {
         throw runtime_error("PEER_PORT cannot be set to 0");
     }
-    PeerRecord pr{"127.0.0.1", to->getConfig().PEER_PORT,
-                  from->getClock().now()};
-    from->getOverlayManager().connectTo(pr);
+    auto address = PeerBareAddress{"127.0.0.1", to->getConfig().PEER_PORT};
+    from->getOverlayManager().connectTo(address);
 }
 
 void
@@ -689,7 +687,7 @@ Simulation::newConfig()
 {
     if (mConfigGen)
     {
-        return mConfigGen();
+        return mConfigGen(mConfigCount++);
     }
     else
     {
