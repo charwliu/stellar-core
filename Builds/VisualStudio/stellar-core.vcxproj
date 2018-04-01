@@ -342,7 +342,6 @@ exit /b 0
     <ClCompile Include="..\..\src\ledger\LedgerHeaderFrame.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerHeaderTests.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerManagerImpl.cpp" />
-    <ClCompile Include="..\..\src\ledger\LedgerPerformanceTests.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerRange.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerTests.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerTestUtils.cpp" />
@@ -423,11 +422,13 @@ exit /b 0
     <ClCompile Include="..\..\src\overlay\FloodTests.cpp" />
     <ClCompile Include="..\..\src\overlay\ItemFetcherTests.cpp" />
     <ClCompile Include="..\..\src\overlay\LoadManager.cpp" />
+    <ClCompile Include="..\..\src\overlay\LoadManagerTests.cpp" />
     <ClCompile Include="..\..\src\overlay\OverlayManagerTests.cpp" />
     <ClCompile Include="..\..\src\overlay\PeerAuth.cpp" />
     <ClCompile Include="..\..\src\overlay\PeerBareAddress.cpp" />
     <ClCompile Include="..\..\src\overlay\PeerRecord.cpp" />
     <ClCompile Include="..\..\src\overlay\PeerRecordTests.cpp" />
+    <ClCompile Include="..\..\src\overlay\PeerSharedKeyId.cpp" />
     <ClCompile Include="..\..\src\overlay\TCPPeerTests.cpp" />
     <ClCompile Include="..\..\src\overlay\Tracker.cpp" />
     <ClCompile Include="..\..\src\overlay\TrackerTests.cpp" />
@@ -500,6 +501,7 @@ exit /b 0
     <ClCompile Include="..\..\src\util\Timer.cpp" />
     <ClCompile Include="..\..\src\util\TimerTests.cpp" />
     <ClCompile Include="..\..\src\util\types.cpp" />
+    <ClCompile Include="..\..\src\util\MetricResetter.cpp" />
     <ClCompile Include="..\..\src\main\CommandHandler.cpp" />
     <ClCompile Include="..\..\src\main\Config.cpp" />
     <ClCompile Include="..\..\src\main\main.cpp" />
@@ -612,6 +614,7 @@ exit /b 0
     <ClInclude Include="..\..\src\overlay\LoadManager.h" />
     <ClInclude Include="..\..\src\overlay\PeerAuth.h" />
     <ClInclude Include="..\..\src\overlay\PeerBareAddress.h" />
+    <ClInclude Include="..\..\src\overlay\PeerSharedKeyId.h" />
     <ClInclude Include="..\..\src\overlay\StellarXDR.h" />
     <ClInclude Include="..\..\src\herder\HerderImpl.h" />
     <ClInclude Include="..\..\src\herder\Herder.h" />
@@ -718,6 +721,7 @@ exit /b 0
     <ClInclude Include="..\..\src\util\TmpDir.h" />
     <ClInclude Include="..\..\src\util\Timer.h" />
     <ClInclude Include="..\..\src\util\types.h" />
+    <ClInclude Include="..\..\src\util\MetricResetter.h" />
     <ClInclude Include="..\..\src\util\XDRStream.h" />
     <ClInclude Include="..\..\src\work\Work.h" />
     <ClInclude Include="..\..\src\work\WorkManager.h" />

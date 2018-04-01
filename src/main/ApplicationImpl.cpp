@@ -235,6 +235,7 @@ ApplicationImpl::getJsonInfo()
     info["ledger"]["version"] = lcl.header.ledgerVersion;
     info["ledger"]["baseFee"] = lcl.header.baseFee;
     info["ledger"]["baseReserve"] = lcl.header.baseReserve;
+    info["ledger"]["maxTxSetSize"] = lcl.header.maxTxSetSize;
     info["ledger"]["age"] = (int)lm.secondsSinceLastLedgerClose();
     info["peers"]["pending_count"] = getOverlayManager().getPendingPeersCount();
     info["peers"]["authenticated_count"] =
@@ -610,6 +611,20 @@ ApplicationImpl::syncAllMetrics()
     mHerder->syncMetrics();
     mLedgerManager->syncMetrics();
     syncOwnMetrics();
+}
+
+void
+ApplicationImpl::clearMetrics(std::string const& domain)
+{
+    MetricResetter resetter;
+    auto const& metrics = mMetrics->GetAllMetrics();
+    for (auto const& kv : metrics)
+    {
+        if (domain.empty() || kv.first.domain() == domain)
+        {
+            kv.second->Process(resetter);
+        }
+    }
 }
 
 TmpDirManager&
