@@ -6,6 +6,7 @@
 #include "bucket/BucketManager.h"
 #include "crypto/Hex.h"
 #include "herder/TxSetFrame.h"
+#include "history/HistoryArchiveManager.h"
 #include "ledger/CheckpointRange.h"
 #include "test/TestAccount.h"
 #include "test/TestUtils.h"
@@ -57,7 +58,7 @@ TmpDirHistoryConfigurator::configure(Config& mCfg, bool writable) const
     }
 
     mCfg.HISTORY["test"] =
-        std::make_shared<HistoryArchive>("test", getCmd, putCmd, mkdirCmd);
+        HistoryArchiveConfiguration{"test", getCmd, putCmd, mkdirCmd};
     return mCfg;
 }
 
@@ -82,7 +83,7 @@ S3HistoryConfigurator::configure(Config& mCfg, bool writable) const
         putCmd = "aws s3 cp {0} " + s3b + "/{1}";
     }
     mCfg.HISTORY["test"] =
-        std::make_shared<HistoryArchive>("test", getCmd, putCmd, mkdirCmd);
+        HistoryArchiveConfiguration{"test", getCmd, putCmd, mkdirCmd};
     return mCfg;
 }
 
@@ -207,21 +208,11 @@ CatchupSimulation::CatchupSimulation(std::shared_ptr<HistoryConfigurator> cg)
           mClock, mHistoryConfigurator->configure(mCfg, true)))
     , mApp(*mAppPtr)
 {
-    CHECK(HistoryManager::initializeHistoryArchive(mApp, "test"));
+    CHECK(mApp.getHistoryArchiveManager().initializeHistoryArchive("test"));
 }
 
 CatchupSimulation::~CatchupSimulation()
 {
-}
-
-void
-CatchupSimulation::crankTillDone()
-{
-    while (!mApp.getWorkManager().allChildrenDone() &&
-           !mApp.getClock().getIOService().stopped())
-    {
-        mApp.getClock().crank(true);
-    }
 }
 
 void
@@ -384,8 +375,25 @@ CatchupSimulation::catchupNewApplication(uint32_t initLedger, uint32_t count,
         mClock, mHistoryConfigurator->configure(mCfgs.back(), false));
 
     app2->start();
-    CHECK(catchupApplication(initLedger, count, manual, app2) == true);
+    REQUIRE(catchupApplication(initLedger, count, manual, app2));
     return app2;
+}
+
+void
+CatchupSimulation::crankForAtMost(Application::pointer app,
+                                  VirtualClock::duration duration)
+{
+    auto start = std::chrono::system_clock::now();
+    while (!app->getWorkManager().allChildrenDone())
+    {
+        app->getClock().crank(false);
+        auto current = std::chrono::system_clock::now();
+        auto diff = current - start;
+        if (diff > duration)
+        {
+            break;
+        }
+    }
 }
 
 bool
@@ -472,16 +480,28 @@ CatchupSimulation::catchupApplication(uint32_t initLedger, uint32_t count,
     auto catchupConfiguration = CatchupConfiguration(initLedger, count);
 
     REQUIRE(!app2->getClock().getIOService().stopped());
+    crankForAtMost(app2, std::chrono::seconds{30});
+    auto nextLedger = lm.getLedgerNum();
 
-    while (!app2->getWorkManager().allChildrenDone())
-    {
-        app2->getClock().crank(false);
-    }
+    CLOG(INFO, "History") << "Catching up finished: lastLedger = "
+                          << lastLedger;
+    CLOG(INFO, "History") << "Catching up finished: initLedger = "
+                          << initLedger;
+    CLOG(INFO, "History") << "Catching up finished: nextLedger = "
+                          << nextLedger;
+    CLOG(INFO, "History") << "Catching up finished: published range is "
+                          << mLedgerSeqs.size() << " ledgers, covering "
+                          << "[" << mLedgerSeqs.front() << ", "
+                          << mLedgerSeqs.back() << "]";
 
     if (app2->getLedgerManager().getState() != LedgerManager::LM_SYNCED_STATE)
     {
+        CLOG(INFO, "History") << "Catching up failed: state = "
+                              << app2->getLedgerManager().getState();
         return false;
     }
+
+    CLOG(INFO, "History") << "Caught up";
 
     auto endCatchupMetrics = getCatchupMetrics(app2);
     auto catchupPerformedWork =
@@ -490,16 +510,6 @@ CatchupSimulation::catchupApplication(uint32_t initLedger, uint32_t count,
     REQUIRE(catchupPerformedWork ==
             computeCatchupPerformedWork(lastLedger, catchupConfiguration,
                                         app2->getHistoryManager()));
-
-    uint32_t nextLedger = lm.getLedgerNum();
-
-    CLOG(INFO, "History") << "Caught up: lastLedger = " << lastLedger;
-    CLOG(INFO, "History") << "Caught up: initLedger = " << initLedger;
-    CLOG(INFO, "History") << "Caught up: nextLedger = " << nextLedger;
-    CLOG(INFO, "History") << "Caught up: published range is "
-                          << mLedgerSeqs.size() << " ledgers, covering "
-                          << "[" << mLedgerSeqs.front() << ", "
-                          << mLedgerSeqs.back() << "]";
 
     // Assuming we caught up to nextLedger 128 (say), LCL will be 127, so we
     // must subtract 1.
