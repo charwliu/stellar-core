@@ -12,7 +12,8 @@
 #include "ledger/LedgerManager.h"
 #include "ledger/LedgerRange.h"
 #include "lib/util/format.h"
-#include "util/basen.h"
+#include "util/Decoder.h"
+#include "util/XDROperators.h"
 #include "util/types.h"
 #include <algorithm>
 
@@ -21,8 +22,6 @@ using namespace std;
 
 namespace stellar
 {
-using xdr::operator<;
-
 const char* AccountFrame::kSQLCreateStatement1 =
     "CREATE TABLE accounts"
     "("
@@ -256,8 +255,8 @@ AccountFrame::loadAccount(AccountID const& accountID, Database& db)
 
     account.homeDomain = homeDomain;
 
-    bn::decode_b64(thresholds.begin(), thresholds.end(),
-                   res->mAccountEntry.thresholds.begin());
+    decoder::decode_b64(thresholds.begin(), thresholds.end(),
+                        res->mAccountEntry.thresholds.begin());
 
     if (inflationDestInd == soci::i_ok)
     {
@@ -454,7 +453,7 @@ AccountFrame::storeUpdate(LedgerDelta& delta, Database& db, bool insert)
         inflation_ind = soci::i_ok;
     }
 
-    string thresholds(bn::encode_b64(mAccountEntry.thresholds));
+    string thresholds(decoder::encode_b64(mAccountEntry.thresholds));
 
     {
         soci::statement& st = prep.statement();

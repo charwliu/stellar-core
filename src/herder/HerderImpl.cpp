@@ -26,8 +26,8 @@
 #include "medida/counter.h"
 #include "medida/meter.h"
 #include "medida/metrics_registry.h"
+#include "util/Decoder.h"
 #include "util/XDRStream.h"
-#include "util/basen.h"
 #include "xdrpp/marshal.h"
 
 #include <ctime>
@@ -123,7 +123,7 @@ HerderImpl::bootstrap()
     assert(getSCP().isValidator());
     assert(mApp.getConfig().FORCE_SCP);
 
-    mLedgerManager.setState(LedgerManager::LM_SYNCED_STATE);
+    mLedgerManager.bootstrap();
     mHerderSCPDriver.bootstrap();
 
     ledgerClosed();
@@ -563,16 +563,7 @@ HerderImpl::ledgerClosed()
         return;
     }
 
-    auto seconds = Herder::EXP_LEDGER_TIMESPAN_SECONDS;
-    if (mApp.getConfig().ARTIFICIALLY_ACCELERATE_TIME_FOR_TESTING)
-    {
-        seconds = std::chrono::seconds(1);
-    }
-    if (mApp.getConfig().ARTIFICIALLY_SET_CLOSE_TIME_FOR_TESTING)
-    {
-        seconds = std::chrono::seconds(
-            mApp.getConfig().ARTIFICIALLY_SET_CLOSE_TIME_FOR_TESTING);
-    }
+    auto seconds = mApp.getConfig().getExpectedLedgerCloseTime();
 
     // bootstrap with a pessimistic estimate of when
     // the ballot protocol started last
@@ -936,7 +927,7 @@ HerderImpl::persistSCPState(uint64 slot)
     auto latestSCPData =
         xdr::xdr_to_opaque(latestEnvs, latestTxSets, latestQSets);
     std::string scpState;
-    scpState = bn::encode_b64(latestSCPData);
+    scpState = decoder::encode_b64(latestSCPData);
 
     mApp.getPersistentState().setState(PersistentState::kLastSCPData, scpState);
 }
@@ -960,7 +951,7 @@ HerderImpl::restoreSCPState()
     }
 
     std::vector<uint8_t> buffer;
-    bn::decode_b64(latest64, buffer);
+    decoder::decode_b64(latest64, buffer);
 
     xdr::xvector<SCPEnvelope> latestEnvs;
     xdr::xvector<TransactionSet> latestTxSets;

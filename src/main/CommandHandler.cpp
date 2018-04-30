@@ -20,7 +20,8 @@
 #include "util/make_unique.h"
 
 #include "medida/reporting/json_reporter.h"
-#include "util/basen.h"
+#include "util/Decoder.h"
+#include "util/XDROperators.h"
 #include "xdrpp/marshal.h"
 #include "xdrpp/printer.h"
 
@@ -37,8 +38,6 @@ using std::placeholders::_2;
 
 namespace stellar
 {
-using xdr::operator<;
-
 CommandHandler::CommandHandler(Application& app) : mApp(app)
 {
     if (mApp.getConfig().HTTP_PORT)
@@ -568,7 +567,7 @@ CommandHandler::catchup(std::string const& params, std::string& retStr)
         }
     }
 
-    mApp.getLedgerManager().startCatchUp({ledger, count}, true);
+    mApp.getLedgerManager().startCatchup({ledger, count}, true);
     retStr = (std::string("Started catchup to ledger ") +
               std::to_string(ledger) + std::string(" in mode ") +
               std::string(
@@ -854,7 +853,7 @@ CommandHandler::tx(std::string const& params, std::string& retStr)
         TransactionEnvelope envelope;
         std::string blob = params.substr(prefix.size());
         std::vector<uint8_t> binBlob;
-        bn::decode_b64(blob, binBlob);
+        decoder::decode_b64(blob, binBlob);
 
         xdr::xdr_from_opaque(binBlob, envelope);
         TransactionFramePtr transaction =
@@ -882,8 +881,9 @@ CommandHandler::tx(std::string const& params, std::string& retStr)
             {
                 std::string resultBase64;
                 auto resultBin = xdr::xdr_to_opaque(transaction->getResult());
-                resultBase64.reserve(bn::encoded_size64(resultBin.size()) + 1);
-                resultBase64 = bn::encode_b64(resultBin);
+                resultBase64.reserve(decoder::encoded_size64(resultBin.size()) +
+                                     1);
+                resultBase64 = decoder::encode_b64(resultBin);
 
                 output << " , \"error\": \"" << resultBase64 << "\"";
             }

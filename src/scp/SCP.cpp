@@ -9,6 +9,7 @@
 #include "scp/Slot.h"
 #include "util/GlobalChecks.h"
 #include "util/Logging.h"
+#include "util/XDROperators.h"
 #include "xdrpp/marshal.h"
 
 #include <algorithm>
@@ -16,7 +17,6 @@
 
 namespace stellar
 {
-using xdr::operator==;
 
 SCP::SCP(SCPDriver& driver, NodeID const& nodeID, bool isValidator,
          SCPQuorumSet const& qSetLocal)
@@ -258,9 +258,11 @@ SCP::TriBool
 SCP::isNodeInQuorum(NodeID const& node)
 {
     TriBool res = TB_MAYBE;
-    for (auto& s : mKnownSlots)
+    // iterate in reverse order as the most recent slots are authoritative over
+    // older ones
+    for (auto it = mKnownSlots.rbegin(); it != mKnownSlots.rend(); it++)
     {
-        auto slot = s.second;
+        auto slot = it->second;
         res = slot->isNodeInQuorum(node);
         if (res == TB_TRUE || res == TB_FALSE)
         {
