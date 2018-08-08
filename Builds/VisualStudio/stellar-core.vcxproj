@@ -89,6 +89,7 @@
       </ControlFlowGuard>
       <SmallerTypeCheck>false</SmallerTypeCheck>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -145,6 +146,7 @@ exit /b 0
       </ControlFlowGuard>
       <SmallerTypeCheck>false</SmallerTypeCheck>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -201,6 +203,7 @@ exit /b 0
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <DisableSpecificWarnings>4060;4100;4127;4324;4408;4510;4512;4582;4583;4592</DisableSpecificWarnings>
       <ControlFlowGuard>false</ControlFlowGuard>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -331,8 +334,8 @@ exit /b 0
     <ClCompile Include="..\..\src\invariant\InvariantTests.cpp" />
     <ClCompile Include="..\..\src\invariant\InvariantTestUtils.cpp" />
     <ClCompile Include="..\..\src\invariant\LedgerEntryIsValid.cpp" />
-    <ClCompile Include="..\..\src\invariant\MinimumAccountBalance.cpp" />
-    <ClCompile Include="..\..\src\invariant\MinimumAccountBalanceTests.cpp" />
+    <ClCompile Include="..\..\src\invariant\LiabilitiesMatchOffers.cpp" />
+    <ClCompile Include="..\..\src\invariant\LiabilitiesMatchOffersTests.cpp" />
     <ClCompile Include="..\..\src\ledger\AccountFrame.cpp" />
     <ClCompile Include="..\..\src\ledger\CheckpointRange.cpp" />
     <ClCompile Include="..\..\src\ledger\DataFrame.cpp" />
@@ -346,6 +349,7 @@ exit /b 0
     <ClCompile Include="..\..\src\ledger\LedgerRange.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerTests.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerTestUtils.cpp" />
+    <ClCompile Include="..\..\src\ledger\LiabilitiesTests.cpp" />
     <ClCompile Include="..\..\src\ledger\OfferFrame.cpp" />
     <ClCompile Include="..\..\src\ledger\SyncingLedgerChain.cpp" />
     <ClCompile Include="..\..\src\ledger\SyncingLedgerChainTests.cpp" />
@@ -601,7 +605,7 @@ exit /b 0
     <ClInclude Include="..\..\src\invariant\InvariantManagerImpl.h" />
     <ClInclude Include="..\..\src\invariant\InvariantTestUtils.h" />
     <ClInclude Include="..\..\src\invariant\LedgerEntryIsValid.h" />
-    <ClInclude Include="..\..\src\invariant\MinimumAccountBalance.h" />
+    <ClInclude Include="..\..\src\invariant\LiabilitiesMatchOffers.h" />
     <ClInclude Include="..\..\src\ledger\CheckpointRange.h" />
     <ClInclude Include="..\..\src\ledger\DataFrame.h" />
     <ClInclude Include="..\..\src\ledger\LedgerRange.h" />
