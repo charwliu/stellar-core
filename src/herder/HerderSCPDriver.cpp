@@ -32,27 +32,8 @@ HerderSCPDriver::SCPMetrics::SCPMetrics(Application& app)
     , mValueValid(app.getMetrics().NewMeter({"scp", "value", "valid"}, "value"))
     , mValueInvalid(
           app.getMetrics().NewMeter({"scp", "value", "invalid"}, "value"))
-    , mValueExternalize(
-          app.getMetrics().NewMeter({"scp", "value", "externalize"}, "value"))
-    , mQuorumHeard(
-          app.getMetrics().NewMeter({"scp", "quorum", "heard"}, "quorum"))
-    , mNominatingValue(
-          app.getMetrics().NewMeter({"scp", "value", "nominating"}, "value"))
-    , mUpdatedCandidate(
-          app.getMetrics().NewMeter({"scp", "value", "candidate"}, "value"))
-    , mStartBallotProtocol(
-          app.getMetrics().NewMeter({"scp", "ballot", "started"}, "ballot"))
-    , mAcceptedBallotPrepared(app.getMetrics().NewMeter(
-          {"scp", "ballot", "accepted-prepared"}, "ballot"))
-    , mConfirmedBallotPrepared(app.getMetrics().NewMeter(
-          {"scp", "ballot", "confirmed-prepared"}, "ballot"))
-    , mAcceptedCommit(app.getMetrics().NewMeter(
-          {"scp", "ballot", "accepted-commit"}, "ballot"))
-
-    , mHerderStateCurrent(
-          app.getMetrics().NewCounter({"herder", "state", "current"}))
-    , mHerderStateChanges(
-          app.getMetrics().NewTimer({"herder", "state", "changes"}))
+    , mCombinedCandidates(app.getMetrics().NewMeter(
+          {"scp", "nomination", "combinecandidates"}, "value"))
     , mNominateToPrepare(
           app.getMetrics().NewTimer({"scp", "timing", "nominated"}))
     , mPrepareToExternalize(
@@ -71,7 +52,6 @@ HerderSCPDriver::HerderSCPDriver(Application& app, HerderImpl& herder,
     , mSCP(*this, mApp.getConfig().NODE_SEED.getPublicKey(),
            mApp.getConfig().NODE_IS_VALIDATOR, mApp.getConfig().QUORUM_SET)
     , mSCPMetrics{mApp}
-    , mLastStateChange{mApp.getClock().now()}
 {
 }
 
@@ -82,10 +62,6 @@ HerderSCPDriver::~HerderSCPDriver()
 void
 HerderSCPDriver::stateChanged()
 {
-    mSCPMetrics.mHerderStateCurrent.set_count(static_cast<int64_t>(getState()));
-    auto now = mApp.getClock().now();
-    mSCPMetrics.mHerderStateChanges.Update(now - mLastStateChange);
-    mLastStateChange = now;
     mApp.syncOwnMetrics();
 }
 
@@ -110,17 +86,6 @@ HerderSCPDriver::getState() const
 {
     return mTrackingSCP && mLastTrackingSCP ? Herder::HERDER_TRACKING_STATE
                                             : Herder::HERDER_SYNCING_STATE;
-}
-
-void
-HerderSCPDriver::syncMetrics()
-{
-    auto c = mSCPMetrics.mHerderStateCurrent.count();
-    auto n = static_cast<int64_t>(getState());
-    if (c != n)
-    {
-        mSCPMetrics.mHerderStateCurrent.set_count(n);
-    }
 }
 
 void
@@ -179,6 +144,31 @@ HerderSCPDriver::isSlotCompatibleWithCurrentState(uint64_t slotIndex) const
     return res;
 }
 
+bool
+HerderSCPDriver::checkCloseTime(uint64_t slotIndex, uint64_t lastCloseTime,
+                                StellarValue const& b) const
+{
+    // Check closeTime (not too old)
+    if (b.closeTime <= lastCloseTime)
+    {
+        CLOG(TRACE, "Herder")
+            << "Close time too old for slot " << slotIndex << ", got "
+            << b.closeTime << " vs " << lastCloseTime;
+        return false;
+    }
+
+    // Check closeTime (not too far in future)
+    uint64_t timeNow = mApp.timeNow();
+    if (b.closeTime > timeNow + Herder::MAX_TIME_SLIP_SECONDS.count())
+    {
+        CLOG(TRACE, "Herder")
+            << "Close time too far in future for slot " << slotIndex << ", got "
+            << b.closeTime << " vs " << timeNow;
+        return false;
+    }
+    return true;
+}
+
 SCPDriver::ValidationLevel
 HerderSCPDriver::validateValueHelper(uint64_t slotIndex,
                                      StellarValue const& b) const
@@ -187,13 +177,48 @@ HerderSCPDriver::validateValueHelper(uint64_t slotIndex,
 
     bool compat = isSlotCompatibleWithCurrentState(slotIndex);
 
+    auto const& lcl = mLedgerManager.getLastClosedLedgerHeader().header;
+
+    // when checking close time, start with what we have locally
+    lastCloseTime = lcl.scpValue.closeTime;
+
     if (compat)
     {
-        lastCloseTime = mLedgerManager.getLastClosedLedgerHeader()
-                            .header.scpValue.closeTime;
+        if (!checkCloseTime(slotIndex, lastCloseTime, b))
+        {
+            return SCPDriver::kInvalidValue;
+        }
     }
     else
     {
+        if (slotIndex == lcl.ledgerSeq)
+        {
+            // previous ledger
+            if (b.closeTime != lastCloseTime)
+            {
+                CLOG(TRACE, "Herder")
+                    << "Got a bad close time for ledger " << slotIndex
+                    << ", got " << b.closeTime << " vs " << lastCloseTime;
+                return SCPDriver::kInvalidValue;
+            }
+        }
+        else if (slotIndex < lcl.ledgerSeq)
+        {
+            // basic sanity check on older value
+            if (b.closeTime >= lastCloseTime)
+            {
+                CLOG(TRACE, "Herder")
+                    << "Got a bad close time for ledger " << slotIndex
+                    << ", got " << b.closeTime << " vs " << lastCloseTime;
+                return SCPDriver::kInvalidValue;
+            }
+        }
+        else if (!checkCloseTime(slotIndex, lastCloseTime, b))
+        {
+            // future messages must be valid compared to lastCloseTime
+            return SCPDriver::kInvalidValue;
+        }
+
         if (!mTrackingSCP)
         {
             // if we're not tracking, there is not much more we can do to
@@ -230,36 +255,14 @@ HerderSCPDriver::validateValueHelper(uint64_t slotIndex,
                 << nextConsensusLedgerIndex();
             return SCPDriver::kInvalidValue;
         }
+
+        // when tracking, we use the tracked time for last close time
         lastCloseTime = mTrackingSCP->mConsensusValue.closeTime;
-    }
-
-    // Check closeTime (not too old)
-    if (b.closeTime <= lastCloseTime)
-    {
-        if (Logging::logTrace("Herder"))
+        if (!checkCloseTime(slotIndex, lastCloseTime, b))
         {
-            CLOG(TRACE, "Herder")
-                << "Close time too old for slot " << slotIndex << ", got "
-                << b.closeTime << " vs " << lastCloseTime;
+            return SCPDriver::kInvalidValue;
         }
-        return SCPDriver::kInvalidValue;
-    }
 
-    // Check closeTime (not too far in future)
-    uint64_t timeNow = mApp.timeNow();
-    if (b.closeTime > timeNow + Herder::MAX_TIME_SLIP_SECONDS.count())
-    {
-        if (Logging::logTrace("Herder"))
-        {
-            CLOG(TRACE, "Herder")
-                << "Close time too recent for slot " << slotIndex << ", got "
-                << b.closeTime << " vs " << timeNow;
-        }
-        return SCPDriver::kInvalidValue;
-    }
-
-    if (!compat)
-    {
         // this is as far as we can go if we don't have the state
         if (Logging::logTrace("Herder"))
         {
@@ -327,7 +330,8 @@ HerderSCPDriver::validateValue(uint64_t slotIndex, Value const& value,
 
         LedgerUpgradeType lastUpgradeType = LEDGER_UPGRADE_VERSION;
         // check upgrades
-        for (size_t i = 0; i < b.upgrades.size(); i++)
+        for (size_t i = 0;
+             i < b.upgrades.size() && res != SCPDriver::kInvalidValue; i++)
         {
             LedgerUpgradeType thisUpgradeType;
             if (!mUpgrades.isValid(b.upgrades[i], thisUpgradeType, nomination,
@@ -338,7 +342,7 @@ HerderSCPDriver::validateValue(uint64_t slotIndex, Value const& value,
                     << i;
                 res = SCPDriver::kInvalidValue;
             }
-            if (i != 0 && (lastUpgradeType >= thisUpgradeType))
+            else if (i != 0 && (lastUpgradeType >= thisUpgradeType))
             {
                 CLOG(TRACE, "Herder")
                     << "HerderSCPDriver::validateValue out of "
@@ -466,6 +470,9 @@ Value
 HerderSCPDriver::combineCandidates(uint64_t slotIndex,
                                    std::set<Value> const& candidates)
 {
+    CLOG(DEBUG, "Herder") << "Combining " << candidates.size() << " candidates";
+    mSCPMetrics.mCombinedCandidates.Mark(candidates.size());
+
     Hash h;
 
     StellarValue comp(h, 0, emptyUpgradeSteps, 0);
@@ -584,7 +591,7 @@ HerderSCPDriver::combineCandidates(uint64_t slotIndex,
                                 << " invalid transactions";
 
         // post to avoid triggering SCP handling code recursively
-        mApp.getClock().getIOService().post([this, bestTxSet]() {
+        mApp.postOnMainThreadWithDelay([this, bestTxSet]() {
             mPendingEnvelopes.recvTxSet(bestTxSet->getContentsHash(),
                                         bestTxSet);
         });
@@ -596,8 +603,6 @@ HerderSCPDriver::combineCandidates(uint64_t slotIndex,
 void
 HerderSCPDriver::valueExternalized(uint64_t slotIndex, Value const& value)
 {
-    mSCPMetrics.mValueExternalize.Mark();
-
     auto it = mSCPTimers.begin(); // cancel all timers below this slot
     while (it != mSCPTimers.end() && it->first <= slotIndex)
     {
@@ -714,7 +719,6 @@ HerderSCPDriver::getQSet(Hash const& qSetHash)
 void
 HerderSCPDriver::ballotDidHearFromQuorum(uint64_t, SCPBallot const&)
 {
-    mSCPMetrics.mQuorumHeard.Mark();
 }
 
 void
@@ -723,17 +727,11 @@ HerderSCPDriver::nominatingValue(uint64_t slotIndex, Value const& value)
     if (Logging::logDebug("Herder"))
         CLOG(DEBUG, "Herder") << "nominatingValue i:" << slotIndex
                               << " v: " << getValueString(value);
-
-    if (!value.empty())
-    {
-        mSCPMetrics.mNominatingValue.Mark();
-    }
 }
 
 void
 HerderSCPDriver::updatedCandidateValue(uint64_t slotIndex, Value const& value)
 {
-    mSCPMetrics.mUpdatedCandidate.Mark();
 }
 
 void
@@ -741,26 +739,22 @@ HerderSCPDriver::startedBallotProtocol(uint64_t slotIndex,
                                        SCPBallot const& ballot)
 {
     recordSCPEvent(slotIndex, false);
-    mSCPMetrics.mStartBallotProtocol.Mark();
 }
 void
 HerderSCPDriver::acceptedBallotPrepared(uint64_t slotIndex,
                                         SCPBallot const& ballot)
 {
-    mSCPMetrics.mAcceptedBallotPrepared.Mark();
 }
 
 void
 HerderSCPDriver::confirmedBallotPrepared(uint64_t slotIndex,
                                          SCPBallot const& ballot)
 {
-    mSCPMetrics.mConfirmedBallotPrepared.Mark();
 }
 
 void
 HerderSCPDriver::acceptedCommit(uint64_t slotIndex, SCPBallot const& ballot)
 {
-    mSCPMetrics.mAcceptedCommit.Mark();
 }
 
 optional<VirtualClock::time_point>

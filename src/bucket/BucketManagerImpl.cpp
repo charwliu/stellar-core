@@ -57,11 +57,9 @@ BucketManagerImpl::BucketManagerImpl(Application& app)
     : mApp(app)
     , mWorkDir(nullptr)
     , mLockedBucketDir(nullptr)
-    , mBucketObjectInsert(
-          app.getMetrics().NewMeter({"bucket", "object", "insert"}, "object"))
-    , mBucketByteInsert(
-          app.getMetrics().NewMeter({"bucket", "byte", "insert"}, "byte"))
-    , mBucketAddBatch(app.getMetrics().NewTimer({"bucket", "batch", "add"}))
+    , mBucketObjectInsertBatch(app.getMetrics().NewMeter(
+          {"bucket", "batch", "objectsadded"}, "object"))
+    , mBucketAddBatch(app.getMetrics().NewTimer({"bucket", "batch", "addtime"}))
     , mBucketSnapMerge(app.getMetrics().NewTimer({"bucket", "snap", "merge"}))
     , mSharedBucketsSize(
           app.getMetrics().NewCounter({"bucket", "memory", "shared"}))
@@ -179,8 +177,6 @@ BucketManagerImpl::adoptFileAsBucket(std::string const& filename,
     }
     else
     {
-        mBucketObjectInsert.Mark(nObjects);
-        mBucketByteInsert.Mark(nBytes);
         std::string canonicalName = bucketFilename(hash);
         CLOG(DEBUG, "Bucket")
             << "Adopting bucket file " << filename << " as " << canonicalName;
@@ -272,6 +268,11 @@ BucketManagerImpl::getReferencedBuckets() const
 void
 BucketManagerImpl::cleanupStaleFiles()
 {
+    if (mApp.getConfig().DISABLE_BUCKET_GC)
+    {
+        return;
+    }
+
     std::lock_guard<std::recursive_mutex> lock(mBucketMutex);
     auto referenced = getReferencedBuckets();
     std::transform(std::begin(mSharedBuckets), std::end(mSharedBuckets),
@@ -324,7 +325,7 @@ BucketManagerImpl::forgetUnreferencedBuckets()
             CLOG(TRACE, "Bucket")
                 << "BucketManager::forgetUnreferencedBuckets dropping "
                 << filename;
-            if (!filename.empty())
+            if (!filename.empty() && !mApp.getConfig().DISABLE_BUCKET_GC)
             {
                 CLOG(TRACE, "Bucket") << "removing bucket file: " << filename;
                 std::remove(filename.c_str());
@@ -343,6 +344,7 @@ BucketManagerImpl::addBatch(Application& app, uint32_t currLedger,
                             std::vector<LedgerKey> const& deadEntries)
 {
     auto timer = mBucketAddBatch.TimeScope();
+    mBucketObjectInsertBatch.Mark(liveEntries.size());
     mBucketList.addBatch(app, currLedger, liveEntries, deadEntries);
 }
 

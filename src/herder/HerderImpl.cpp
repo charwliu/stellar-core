@@ -11,6 +11,9 @@
 #include "herder/LedgerCloseData.h"
 #include "herder/TxSetFrame.h"
 #include "ledger/LedgerManager.h"
+#include "ledger/LedgerState.h"
+#include "ledger/LedgerStateEntry.h"
+#include "ledger/LedgerStateHeader.h"
 #include "lib/json/json.h"
 #include "main/Application.h"
 #include "main/Config.h"
@@ -18,6 +21,7 @@
 #include "overlay/OverlayManager.h"
 #include "scp/LocalNode.h"
 #include "scp/Slot.h"
+#include "transactions/TransactionUtils.h"
 #include "util/Logging.h"
 #include "util/StatusManager.h"
 #include "util/Timer.h"
@@ -45,15 +49,10 @@ Herder::create(Application& app)
 
 HerderImpl::SCPMetrics::SCPMetrics(Application& app)
     : mLostSync(app.getMetrics().NewMeter({"scp", "sync", "lost"}, "sync"))
-    , mBallotExpire(
-          app.getMetrics().NewMeter({"scp", "ballot", "expire"}, "ballot"))
     , mEnvelopeEmit(
           app.getMetrics().NewMeter({"scp", "envelope", "emit"}, "envelope"))
     , mEnvelopeReceive(
           app.getMetrics().NewMeter({"scp", "envelope", "receive"}, "envelope"))
-
-    , mKnownSlotsSize(
-          app.getMetrics().NewCounter({"scp", "memory", "known-slots"}))
     , mCumulativeStatements(app.getMetrics().NewCounter(
           {"scp", "memory", "cumulative-statements"}))
 
@@ -104,7 +103,8 @@ HerderImpl::getSCP()
 void
 HerderImpl::syncMetrics()
 {
-    mHerderSCPDriver.syncMetrics();
+    mSCPMetrics.mCumulativeStatements.set_count(
+        getSCP().getCumulativeStatemtCount());
 }
 
 std::string
@@ -126,14 +126,6 @@ HerderImpl::bootstrap()
     mHerderSCPDriver.bootstrap();
 
     ledgerClosed();
-}
-
-void
-HerderImpl::updateSCPCounters()
-{
-    mSCPMetrics.mKnownSlotsSize.set_count(getSCP().getKnownSlotsCount());
-    mSCPMetrics.mCumulativeStatements.set_count(
-        getSCP().getCumulativeStatemtCount());
 }
 
 static uint64_t
@@ -169,7 +161,6 @@ HerderImpl::valueExternalized(uint64 slotIndex, StellarValue const& value)
 {
     // record metrics
     getHerderSCPDriver().recordSCPExecutionMetrics(slotIndex);
-    updateSCPCounters();
 
     // called both here and at the end (this one is in case of an exception)
     trackingHeartBeat();
@@ -238,8 +229,8 @@ HerderImpl::valueExternalized(uint64 slotIndex, StellarValue const& value)
 void
 HerderImpl::rebroadcast()
 {
-    for (auto const& e :
-         getSCP().getLatestMessagesSend(mLedgerManager.getLedgerNum()))
+    auto const& lcl = mLedgerManager.getLastClosedLedgerHeader().header;
+    for (auto const& e : getSCP().getLatestMessagesSend(lcl.ledgerSeq + 1))
     {
         broadcast(e);
     }
@@ -320,9 +311,6 @@ HerderImpl::TxMap::recalculate()
 Herder::TransactionSubmitStatus
 HerderImpl::recvTransaction(TransactionFramePtr tx)
 {
-    soci::transaction sqltx(mApp.getDatabase().getSession());
-    mApp.getDatabase().setCurrentTransactionReadOnly();
-
     auto const& acc = tx->getSourceID();
     auto const& txID = tx->getFullHash();
 
@@ -347,15 +335,19 @@ HerderImpl::recvTransaction(TransactionFramePtr tx)
         }
     }
 
-    if (!tx->checkValid(mApp, highSeq))
     {
-        return TX_STATUS_ERROR;
-    }
+        LedgerState ls(mApp.getLedgerStateRoot());
+        if (!tx->checkValid(mApp, ls, highSeq))
+        {
+            return TX_STATUS_ERROR;
+        }
 
-    if (tx->getSourceAccount().getAvailableBalance(mLedgerManager) < totFee)
-    {
-        tx->getResult().result.code(txINSUFFICIENT_BALANCE);
-        return TX_STATUS_ERROR;
+        auto sourceAccount = stellar::loadAccount(ls, tx->getSourceID());
+        if (getAvailableBalance(ls.loadHeader(), sourceAccount) < totFee)
+        {
+            tx->getResult().result.code(txINSUFFICIENT_BALANCE);
+            return TX_STATUS_ERROR;
+        }
     }
 
     if (Logging::logTrace("Herder"))
@@ -536,7 +528,6 @@ HerderImpl::ledgerClosed()
 {
     mTriggerTimer.cancel();
 
-    updateSCPCounters();
     CLOG(TRACE, "Herder") << "HerderImpl::ledgerClosed";
 
     auto lastIndex = mHerderSCPDriver.lastConsensusLedgerIndex();
@@ -716,7 +707,6 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger)
                               << mApp.getStateHuman();
         return;
     }
-    updateSCPCounters();
 
     // our first choice for this round's set is all the tx we have collected
     // during last ledger close
@@ -738,7 +728,7 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger)
     proposedSet->trimInvalid(mApp, removed);
     removeReceivedTxs(removed);
 
-    proposedSet->surgePricingFilter(mLedgerManager);
+    proposedSet->surgePricingFilter(mApp);
 
     if (!proposedSet->checkValid(mApp))
     {

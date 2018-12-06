@@ -421,7 +421,7 @@ TEST_CASE("vblocking and quorum", "[scp]")
     REQUIRE(LocalNode::isVBlocking(qSet, nodeSet) == true);
 }
 
-TEST_CASE("v-blocking distance", "[scp]")
+TEST_CASE("v blocking distance", "[scp]")
 {
     SIMULATION_CREATE_NODE(0);
     SIMULATION_CREATE_NODE(1);
@@ -625,7 +625,6 @@ TEST_CASE("ballot protocol core5", "[scp][ballotprotocol]")
         {
             REQUIRE(scp.hasBallotTimerUpcoming());
         }
-
     };
     // doesn't check timers
     auto recvQuorumChecks = std::bind(recvQuorumChecksEx, _1, _2, _3, false);
