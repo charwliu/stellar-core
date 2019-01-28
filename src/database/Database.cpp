@@ -18,7 +18,7 @@
 #include "herder/Upgrades.h"
 #include "history/HistoryManager.h"
 #include "ledger/LedgerHeaderUtils.h"
-#include "ledger/LedgerState.h"
+#include "ledger/LedgerTxn.h"
 #include "main/ExternalQueue.h"
 #include "main/PersistentState.h"
 #include "overlay/BanManager.h"
@@ -29,11 +29,15 @@
 #include "medida/metrics_registry.h"
 #include "medida/timer.h"
 
+#include <soci-sqlite3.h>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
+extern "C" int
+sqlite3_carray_init(sqlite_api::sqlite3* db, char** pzErrMsg,
+                    const sqlite_api::sqlite3_api_routines* pApi);
 extern "C" void register_factory_sqlite3();
 
 #ifdef USE_POSTGRES
@@ -51,7 +55,7 @@ using namespace std;
 
 bool Database::gDriversRegistered = false;
 
-static unsigned long const SCHEMA_VERSION = 7;
+static unsigned long const SCHEMA_VERSION = 8;
 
 static void
 setSerializable(soci::session& sess)
@@ -96,6 +100,11 @@ Database::Database(Application& app)
         // busy_timeout gives room for external processes
         // that may lock the database for some time
         mSession << "PRAGMA busy_timeout = 10000";
+
+        // Register the sqlite carray() extension we use for bulk operations.
+        auto sqlite3 = dynamic_cast<soci::sqlite3_session_backend*>(
+            mSession.get_backend());
+        sqlite3_carray_init(sqlite3->conn_, nullptr, nullptr);
     }
     else
     {
@@ -108,40 +117,9 @@ Database::applySchemaUpgrade(unsigned long vers)
 {
     clearPreparedStatementCache();
 
+    soci::transaction tx(mSession);
     switch (vers)
     {
-    case 2:
-        HerderPersistence::dropAll(*this);
-        break;
-
-    case 3:
-        mApp.getLedgerStateRoot().dropData();
-        break;
-
-    case 4:
-        BanManager::dropAll(*this);
-        mSession << "CREATE INDEX scpquorumsbyseq ON scpquorums(lastledgerseq)";
-        break;
-
-    case 5:
-        try
-        {
-            mSession << "ALTER TABLE accountdata ADD lastmodified INT NOT NULL "
-                        "DEFAULT 0;";
-        }
-        catch (soci::soci_error& e)
-        {
-            if (std::string(e.what()).find("lastmodified") == std::string::npos)
-            {
-                throw;
-            }
-        }
-        break;
-
-    case 6:
-        mSession << "ALTER TABLE peers ADD flags INT NOT NULL DEFAULT 0";
-        break;
-
     case 7:
         Upgrades::dropAll(*this);
         mSession << "ALTER TABLE accounts ADD buyingliabilities BIGINT "
@@ -154,10 +132,29 @@ Database::applySchemaUpgrade(unsigned long vers)
                     "CHECK (sellingliabilities >= 0)";
         break;
 
-    default:
-        throw std::runtime_error("Unknown DB schema version");
+    case 8:
+        // Update schema for signers
+        mSession << "ALTER TABLE accounts ADD signers TEXT";
+        mApp.getLedgerTxnRoot().writeSignersTableIntoAccountsTable();
+        mSession << "DROP TABLE IF EXISTS signers";
+
+        // Update schema for base-64 encoding
+        mApp.getLedgerTxnRoot().encodeDataNamesBase64();
+        mApp.getLedgerTxnRoot().encodeHomeDomainsBase64();
         break;
+
+    default:
+        if (vers <= 6)
+        {
+            throw std::runtime_error(
+                "Database version is too old, must use at least 7");
+        }
+        else
+        {
+            throw std::runtime_error("Unknown DB schema version");
+        }
     }
+    tx.commit();
 }
 
 void
@@ -302,17 +299,20 @@ Database::initialize()
 
     // only time this section should be modified is when
     // consolidating changes found in applySchemaUpgrade here
-    mApp.getLedgerStateRoot().dropAccounts();
-    mApp.getLedgerStateRoot().dropOffers();
-    mApp.getLedgerStateRoot().dropTrustLines();
+    mApp.getLedgerTxnRoot().dropAccounts();
+    mApp.getLedgerTxnRoot().dropOffers();
+    mApp.getLedgerTxnRoot().dropTrustLines();
     OverlayManager::dropAll(*this);
     PersistentState::dropAll(*this);
     ExternalQueue::dropAll(*this);
     LedgerHeaderUtils::dropAll(*this);
     TransactionFrame::dropAll(*this);
     HistoryManager::dropAll(*this);
-    BucketManager::dropAll(mApp);
-    putSchemaVersion(1);
+    mApp.getBucketManager().dropAll();
+    HerderPersistence::dropAll(*this);
+    mApp.getLedgerTxnRoot().dropData();
+    BanManager::dropAll(*this);
+    putSchemaVersion(6);
 }
 
 soci::session&

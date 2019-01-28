@@ -5,8 +5,8 @@
 #include "util/asio.h"
 #include "bucket/BucketApplicator.h"
 #include "bucket/Bucket.h"
-#include "ledger/LedgerState.h"
-#include "ledger/LedgerStateEntry.h"
+#include "ledger/LedgerTxn.h"
+#include "ledger/LedgerTxnEntry.h"
 #include "main/Application.h"
 #include "util/Logging.h"
 #include "util/types.h"
@@ -25,45 +25,57 @@ BucketApplicator::operator bool() const
     return (bool)mBucketIter;
 }
 
-void
+size_t
+BucketApplicator::pos()
+{
+    return mBucketIter.pos();
+}
+
+size_t
+BucketApplicator::size() const
+{
+    return mBucketIter.size();
+}
+
+size_t
 BucketApplicator::advance()
 {
-    LedgerState ls(mApp.getLedgerStateRoot(), false);
+    size_t count = 0;
+
+    LedgerTxn ltx(mApp.getLedgerTxnRoot(), false);
     for (; mBucketIter; ++mBucketIter)
     {
         if ((*mBucketIter).type() == LIVEENTRY)
         {
             auto const& bucketEntry = (*mBucketIter).liveEntry();
             auto key = LedgerEntryKey(bucketEntry);
-            auto entry = ls.load(key);
+            auto entry = ltx.load(key);
             if (entry)
             {
                 entry.current() = bucketEntry;
             }
             else
             {
-                ls.create(bucketEntry);
+                ltx.create(bucketEntry);
             }
         }
         else
         {
-            auto entry = ls.load((*mBucketIter).deadEntry());
+            auto entry = ltx.load((*mBucketIter).deadEntry());
             if (entry)
             {
                 entry.erase();
             }
         }
-        if ((++mSize & 0xff) == 0xff)
+
+        if ((++count & 0xff) == 0xff)
         {
             break;
         }
     }
-    ls.commit();
+    ltx.commit();
 
-    if (!mBucketIter || (mSize & 0xfff) == 0xfff)
-    {
-        CLOG(INFO, "Bucket")
-            << "Bucket-apply: committed " << mSize << " entries";
-    }
+    mCount += count;
+    return count;
 }
 }
