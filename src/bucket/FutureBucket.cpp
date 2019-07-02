@@ -12,8 +12,10 @@
 #include "bucket/FutureBucket.h"
 #include "crypto/Hex.h"
 #include "main/Application.h"
+#include "main/ErrorMessages.h"
 #include "util/LogSlowExecution.h"
 #include "util/Logging.h"
+#include "util/format.h"
 
 #include <chrono>
 
@@ -24,7 +26,8 @@ FutureBucket::FutureBucket(Application& app,
                            std::shared_ptr<Bucket> const& curr,
                            std::shared_ptr<Bucket> const& snap,
                            std::vector<std::shared_ptr<Bucket>> const& shadows,
-                           bool keepDeadEntries)
+                           uint32_t maxProtocolVersion, bool keepDeadEntries,
+                           bool countMergeEvents)
     : mState(FB_LIVE_INPUTS)
     , mInputCurrBucket(curr)
     , mInputSnapBucket(snap)
@@ -41,7 +44,7 @@ FutureBucket::FutureBucket(Application& app,
     {
         mInputShadowBucketHashes.push_back(binToHex(b->getHash()));
     }
-    startMerge(app, keepDeadEntries);
+    startMerge(app, maxProtocolVersion, keepDeadEntries, countMergeEvents);
 }
 
 void
@@ -251,7 +254,8 @@ FutureBucket::getOutputHash() const
 }
 
 void
-FutureBucket::startMerge(Application& app, bool keepDeadEntries)
+FutureBucket::startMerge(Application& app, uint32_t maxProtocolVersion,
+                         bool keepDeadEntries, bool countMergeEvents)
 {
     // NB: startMerge starts with FutureBucket in a half-valid state; the inputs
     // are live but the merge is not yet running. So you can't call checkState()
@@ -275,27 +279,44 @@ FutureBucket::startMerge(Application& app, bool keepDeadEntries)
 
     using task_t = std::packaged_task<std::shared_ptr<Bucket>()>;
     std::shared_ptr<task_t> task =
-        std::make_shared<task_t>([curr, snap, &bm, shadows, keepDeadEntries]() {
+        std::make_shared<task_t>([curr, snap, &bm, shadows, maxProtocolVersion,
+                                  keepDeadEntries, countMergeEvents]() {
             CLOG(TRACE, "Bucket")
                 << "Worker merging curr=" << hexAbbrev(curr->getHash())
                 << " with snap=" << hexAbbrev(snap->getHash());
 
-            auto res = Bucket::merge(bm, curr, snap, shadows, keepDeadEntries);
+            try
+            {
+                auto res =
+                    Bucket::merge(bm, maxProtocolVersion, curr, snap, shadows,
+                                  keepDeadEntries, countMergeEvents);
 
-            CLOG(TRACE, "Bucket")
-                << "Worker finished merging curr=" << hexAbbrev(curr->getHash())
-                << " with snap=" << hexAbbrev(snap->getHash());
+                CLOG(TRACE, "Bucket")
+                    << "Worker finished merging curr="
+                    << hexAbbrev(curr->getHash())
+                    << " with snap=" << hexAbbrev(snap->getHash());
 
-            return res;
+                return res;
+            }
+            catch (std::exception const& e)
+            {
+                throw std::runtime_error(fmt::format(
+                    "Error merging bucket curr={} with snap={}: "
+                    "{}. {}",
+                    hexAbbrev(curr->getHash()), hexAbbrev(snap->getHash()),
+                    e.what(), POSSIBLY_CORRUPTED_LOCAL_FS));
+            };
         });
 
     mOutputBucket = task->get_future().share();
-    app.postOnBackgroundThread(bind(&task_t::operator(), task));
+    app.postOnBackgroundThread(bind(&task_t::operator(), task),
+                               "FutureBucket: merge");
     checkState();
 }
 
 void
-FutureBucket::makeLive(Application& app, bool keepDeadEntries)
+FutureBucket::makeLive(Application& app, uint32_t maxProtocolVersion,
+                       bool keepDeadEntries)
 {
     checkState();
     assert(!isLive());
@@ -321,7 +342,8 @@ FutureBucket::makeLive(Application& app, bool keepDeadEntries)
             mInputShadowBuckets.push_back(b);
         }
         mState = FB_LIVE_INPUTS;
-        startMerge(app, keepDeadEntries);
+        startMerge(app, maxProtocolVersion, keepDeadEntries,
+                   /*countMergeEvents=*/true);
         assert(isLive());
     }
 }

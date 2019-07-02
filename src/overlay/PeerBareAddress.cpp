@@ -14,26 +14,7 @@
 namespace stellar
 {
 
-namespace
-{
-
-void
-ipToXdr(std::string const& ip, xdr::opaque_array<4U>& ret)
-{
-    std::stringstream ss(ip);
-    std::string item;
-    int n = 0;
-    while (getline(ss, item, '.') && n < 4)
-    {
-        ret[n] = static_cast<unsigned char>(atoi(item.c_str()));
-        n++;
-    }
-    if (n != 4)
-        throw std::runtime_error("ipToXdr: failed on `" + ip + "`");
-}
-}
-
-PeerBareAddress::PeerBareAddress() : mType{Type::EMPTY}
+PeerBareAddress::PeerBareAddress() : mType{Type::EMPTY}, mPort{0}
 {
 }
 
@@ -89,7 +70,7 @@ PeerBareAddress::resolve(std::string const& ipPort, Application& app,
         toResolve = m[2].str();
     }
 
-    asio::ip::tcp::resolver resolver(app.getWorkerIOService());
+    asio::ip::tcp::resolver resolver(app.getWorkerIOContext());
     asio::ip::tcp::resolver::query query(toResolve, "", resolveflags);
 
     asio::error_code ec;
@@ -179,14 +160,6 @@ PeerBareAddress::isLocalhost() const
     return mIP == "127.0.0.1";
 }
 
-void
-PeerBareAddress::toXdr(PeerAddress& ret) const
-{
-    ret.port = mPort;
-    ret.ip.type(IPv4);
-    ipToXdr(mIP, ret.ip.ipv4());
-}
-
 bool
 operator==(PeerBareAddress const& x, PeerBareAddress const& y)
 {
@@ -206,5 +179,20 @@ bool
 operator!=(PeerBareAddress const& x, PeerBareAddress const& y)
 {
     return !(x == y);
+}
+
+bool
+operator<(PeerBareAddress const& x, PeerBareAddress const& y)
+{
+    if (x.mPort < y.mPort)
+    {
+        return true;
+    }
+    if (x.mPort > y.mPort)
+    {
+        return false;
+    }
+
+    return x.mIP < y.mIP;
 }
 }

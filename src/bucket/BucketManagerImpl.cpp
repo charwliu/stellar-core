@@ -3,6 +3,7 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "bucket/BucketManagerImpl.h"
+#include "bucket/Bucket.h"
 #include "bucket/BucketList.h"
 #include "crypto/Hex.h"
 #include "history/HistoryManager.h"
@@ -182,6 +183,55 @@ medida::Timer&
 BucketManagerImpl::getMergeTimer()
 {
     return mBucketSnapMerge;
+}
+
+MergeCounters
+BucketManagerImpl::readMergeCounters()
+{
+    std::lock_guard<std::recursive_mutex> lock(mBucketMutex);
+    return mMergeCounters;
+}
+
+MergeCounters&
+MergeCounters::operator+=(MergeCounters const& delta)
+{
+    mPreInitEntryProtocolMerges += delta.mPreInitEntryProtocolMerges;
+    mPostInitEntryProtocolMerges += delta.mPostInitEntryProtocolMerges;
+
+    mNewMetaEntries += delta.mNewMetaEntries;
+    mNewInitEntries += delta.mNewInitEntries;
+    mNewLiveEntries += delta.mNewLiveEntries;
+    mNewDeadEntries += delta.mNewDeadEntries;
+    mOldMetaEntries += delta.mOldMetaEntries;
+    mOldInitEntries += delta.mOldInitEntries;
+    mOldLiveEntries += delta.mOldLiveEntries;
+    mOldDeadEntries += delta.mOldDeadEntries;
+
+    mOldEntriesDefaultAccepted += delta.mOldEntriesDefaultAccepted;
+    mNewEntriesDefaultAccepted += delta.mNewEntriesDefaultAccepted;
+    mNewInitEntriesMergedWithOldDead += delta.mNewInitEntriesMergedWithOldDead;
+    mOldInitEntriesMergedWithNewLive += delta.mOldInitEntriesMergedWithNewLive;
+    mOldInitEntriesMergedWithNewDead += delta.mOldInitEntriesMergedWithNewDead;
+    mNewEntriesMergedWithOldNeitherInit +=
+        delta.mNewEntriesMergedWithOldNeitherInit;
+
+    mShadowScanSteps += delta.mShadowScanSteps;
+    mMetaEntryShadowElisions += delta.mMetaEntryShadowElisions;
+    mLiveEntryShadowElisions += delta.mLiveEntryShadowElisions;
+    mInitEntryShadowElisions += delta.mInitEntryShadowElisions;
+    mDeadEntryShadowElisions += delta.mDeadEntryShadowElisions;
+
+    mOutputIteratorTombstoneElisions += delta.mOutputIteratorTombstoneElisions;
+    mOutputIteratorBufferUpdates += delta.mOutputIteratorBufferUpdates;
+    mOutputIteratorActualWrites += delta.mOutputIteratorActualWrites;
+    return *this;
+}
+
+void
+BucketManagerImpl::incrMergeCounters(MergeCounters const& delta)
+{
+    std::lock_guard<std::recursive_mutex> lock(mBucketMutex);
+    mMergeCounters += delta;
 }
 
 std::shared_ptr<Bucket>
@@ -393,13 +443,34 @@ BucketManagerImpl::forgetUnreferencedBuckets()
 
 void
 BucketManagerImpl::addBatch(Application& app, uint32_t currLedger,
+                            uint32_t currLedgerProtocol,
+                            std::vector<LedgerEntry> const& initEntries,
                             std::vector<LedgerEntry> const& liveEntries,
                             std::vector<LedgerKey> const& deadEntries)
 {
+#ifdef BUILD_TESTS
+    if (mUseFakeTestValuesForNextClose)
+    {
+        currLedgerProtocol = mFakeTestProtocolVersion;
+    }
+#endif
     auto timer = mBucketAddBatch.TimeScope();
-    mBucketObjectInsertBatch.Mark(liveEntries.size());
-    mBucketList.addBatch(app, currLedger, liveEntries, deadEntries);
+    mBucketObjectInsertBatch.Mark(initEntries.size() + liveEntries.size() +
+                                  deadEntries.size());
+    mBucketList.addBatch(app, currLedger, currLedgerProtocol, initEntries,
+                         liveEntries, deadEntries);
 }
+
+#ifdef BUILD_TESTS
+void
+BucketManagerImpl::setNextCloseVersionAndHashForTesting(uint32_t protocolVers,
+                                                        uint256 const& hash)
+{
+    mUseFakeTestValuesForNextClose = true;
+    mFakeTestProtocolVersion = protocolVers;
+    mFakeTestBucketListHash = hash;
+}
+#endif
 
 // updates the given LedgerHeader to reflect the current state of the bucket
 // list
@@ -407,6 +478,14 @@ void
 BucketManagerImpl::snapshotLedger(LedgerHeader& currentHeader)
 {
     currentHeader.bucketListHash = mBucketList.getHash();
+#ifdef BUILD_TESTS
+    if (mUseFakeTestValuesForNextClose)
+    {
+        // Copy fake value and disarm for next close.
+        currentHeader.bucketListHash = mFakeTestBucketListHash;
+        mUseFakeTestValuesForNextClose = false;
+    }
+#endif
     calculateSkipValues(currentHeader);
 }
 
@@ -451,7 +530,8 @@ BucketManagerImpl::checkForMissingBucketsFiles(HistoryArchiveState const& has)
 }
 
 void
-BucketManagerImpl::assumeState(HistoryArchiveState const& has)
+BucketManagerImpl::assumeState(HistoryArchiveState const& has,
+                               uint32_t maxProtocolVersion)
 {
     for (uint32_t i = 0; i < BucketList::kNumLevels; ++i)
     {
@@ -467,7 +547,7 @@ BucketManagerImpl::assumeState(HistoryArchiveState const& has)
         mBucketList.getLevel(i).setNext(has.currentBuckets.at(i).next);
     }
 
-    mBucketList.restartMerges(mApp);
+    mBucketList.restartMerges(mApp, maxProtocolVersion);
     cleanupStaleFiles();
 }
 

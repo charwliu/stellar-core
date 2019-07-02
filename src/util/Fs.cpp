@@ -5,7 +5,9 @@
 #include "util/Fs.h"
 #include "crypto/Hex.h"
 #include "lib/util/format.h"
+#include "util/FileSystemException.h"
 #include "util/Logging.h"
+
 #include <map>
 #include <regex>
 #include <sstream>
@@ -54,7 +56,7 @@ lockFile(std::string const& path)
     {
         // not sure if there is more verbose info that can be obtained here
         errmsg << "unable to create lock file: " << path;
-        throw std::runtime_error(errmsg.str());
+        throw FileSystemException(errmsg.str());
     }
 
     lockMap.insert(std::make_pair(path, h));
@@ -91,7 +93,7 @@ exists(std::string const& name)
         else
         {
             std::string msg("error accessing path: ");
-            throw std::runtime_error(msg + name);
+            throw FileSystemException(msg + name);
         }
     }
     return true;
@@ -117,7 +119,7 @@ deltree(std::string const& d)
     s.fFlags = FOF_NO_UI;
     if (SHFileOperation(&s) != 0)
     {
-        throw std::runtime_error("SHFileOperation failed in deltree");
+        throw FileSystemException("SHFileOperation failed in deltree");
     }
 }
 
@@ -141,36 +143,6 @@ findfiles(std::string const& p,
         }
     }
     return res;
-}
-
-long
-getCurrentPid()
-{
-    return static_cast<long>(GetCurrentProcessId());
-}
-
-bool
-processExists(long pid)
-{
-    std::vector<DWORD> buffer(4096);
-    DWORD bytesWritten;
-    for (;;)
-    {
-        if (!EnumProcesses(buffer.data(),
-                           static_cast<DWORD>(buffer.size() * sizeof(DWORD)),
-                           &bytesWritten))
-        {
-            throw std::runtime_error("EnumProcess failed");
-        }
-        if (bytesWritten / sizeof(DWORD) < buffer.size())
-        {
-            auto found = std::find(buffer.begin(), buffer.end(),
-                                   static_cast<DWORD>(pid));
-            return !(found == buffer.end());
-        }
-        // Need a larger buffer to hold all the ids.
-        buffer.resize(buffer.size() * 2);
-    }
 }
 
 #else
@@ -200,7 +172,7 @@ lockFile(std::string const& path)
     {
         errmsg << "unable to open lock file: " << path << " ("
                << strerror(errno) << ")";
-        throw std::runtime_error(errmsg.str());
+        throw FileSystemException(errmsg.str());
     }
 
     int r = flock(fd, LOCK_EX | LOCK_NB);
@@ -209,7 +181,7 @@ lockFile(std::string const& path)
         close(fd);
         errmsg << "unable to flock file: " << path << " (" << strerror(errno)
                << ")";
-        throw std::runtime_error(errmsg.str());
+        throw FileSystemException(errmsg.str());
     }
 
     lockMap.insert(std::make_pair(path, fd));
@@ -244,7 +216,7 @@ exists(std::string const& name)
         else
         {
             std::string msg("error accessing path: ");
-            throw std::runtime_error(msg + name);
+            throw FileSystemException(msg + name);
         }
     }
     return true;
@@ -270,16 +242,16 @@ nftw_deltree_callback(char const* name, struct stat const* st, int flag,
     {
         if (rmdir(name) != 0)
         {
-            throw std::runtime_error(std::string{"rmdir of "} + name +
-                                     " failed");
+            throw FileSystemException(std::string{"rmdir of "} + name +
+                                      " failed");
         }
     }
     else
     {
         if (std::remove(name) != 0)
         {
-            throw std::runtime_error(std::string{"std::remove of "} + name +
-                                     " failed");
+            throw FileSystemException(std::string{"std::remove of "} + name +
+                                      " failed");
         }
     }
     return 0;
@@ -291,7 +263,7 @@ deltree(std::string const& d)
 {
     if (nftw(d.c_str(), nftw_deltree_callback, FOPEN_MAX, FTW_DEPTH) != 0)
     {
-        throw std::runtime_error("nftw failed in deltree for " + d);
+        throw FileSystemException("nftw failed in deltree for " + d);
     }
 }
 
@@ -326,18 +298,6 @@ findfiles(std::string const& path,
         closedir(dir);
         throw;
     }
-}
-
-long
-getCurrentPid()
-{
-    return static_cast<long>(getpid());
-}
-
-bool
-processExists(long pid)
-{
-    return (kill(pid, 0) == 0);
 }
 
 #endif

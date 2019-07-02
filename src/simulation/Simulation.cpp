@@ -8,8 +8,9 @@
 #include "ledger/LedgerManager.h"
 #include "main/Application.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/PeerRecord.h"
+#include "overlay/PeerManager.h"
 #include "scp/LocalNode.h"
+#include "test/TestUtils.h"
 #include "test/test.h"
 #include "util/Logging.h"
 #include "util/Math.h"
@@ -47,20 +48,23 @@ Simulation::~Simulation()
     // destroy all nodes first
     mNodes.clear();
 
+    // kill scheduler before the io service
+    testutil::shutdownWorkScheduler(*mIdleApp);
+
     // tear down main app/clock
-    mClock.getIOService().poll_one();
-    mClock.getIOService().stop();
+    mClock.getIOContext().poll_one();
+    mClock.getIOContext().stop();
     while (mClock.cancelAllEvents())
         ;
 }
 
 void
-Simulation::setCurrentTime(VirtualClock::time_point t)
+Simulation::setCurrentVirtualTime(VirtualClock::time_point t)
 {
-    mClock.setCurrentTime(t);
+    mClock.setCurrentVirtualTime(t);
     for (auto& p : mNodes)
     {
-        p.second.mClock->setCurrentTime(t);
+        p.second.mClock->setCurrentVirtualTime(t);
     }
 }
 
@@ -70,6 +74,7 @@ Simulation::addNode(SecretKey nodeKey, SCPQuorumSet qSet, Config const* cfg2,
 {
     auto cfg = cfg2 ? std::make_shared<Config>(*cfg2)
                     : std::make_shared<Config>(newConfig());
+    cfg->adjust();
     cfg->NODE_SEED = nodeKey;
 
     if (mQuorumSetAdjuster)
@@ -88,7 +93,7 @@ Simulation::addNode(SecretKey nodeKey, SCPQuorumSet qSet, Config const* cfg2,
                                                     : VirtualClock::REAL_TIME);
     if (mVirtualClockMode)
     {
-        clock->setCurrentTime(mClock.now());
+        clock->setCurrentVirtualTime(mClock.now());
     }
 
     auto app = Application::create(*clock, *cfg, newDB);
@@ -189,7 +194,8 @@ Simulation::dropConnection(NodeID initiator, NodeID acceptor)
                 PeerBareAddress{"127.0.0.1", cAcceptor.PEER_PORT});
             if (peer)
             {
-                peer->drop(true);
+                peer->drop("drop", Peer::DropDirection::WE_DROPPED_REMOTE,
+                           Peer::DropMode::IGNORE_WRITE_QUEUE);
             }
         }
     }
@@ -250,8 +256,11 @@ Simulation::startAllNodes()
     for (auto const& it : mNodes)
     {
         auto app = it.second.mApp;
-        app->start();
-        app->getLoadGenerator().updateMinBalance();
+        if (app->getState() == Application::APP_CREATED_STATE)
+        {
+            app->start();
+            app->getLoadGenerator().updateMinBalance();
+        }
     }
 
     for (auto const& pair : mPendingConnections)
@@ -280,6 +289,11 @@ Simulation::crankNode(NodeID const& id, VirtualClock::time_point timeout)
     auto p = mNodes[id];
     auto clock = p.mClock;
     auto app = p.mApp;
+    if (app->getState() == Application::APP_CREATED_STATE)
+    {
+        throw std::runtime_error("Can't crank node that is not started");
+    }
+
     size_t quantumClicks = 0;
     bool doneWithQuantum = false;
     VirtualTimer quantumTimer(*app);
@@ -332,7 +346,7 @@ Simulation::crankAllNodes(int nbTicks)
         // work was performed
         // or we've triggered the next scheduled event
 
-        if (mClock.getIOService().stopped())
+        if (mClock.getIOContext().stopped())
         {
             return 0;
         }
@@ -360,7 +374,7 @@ Simulation::crankAllNodes(int nbTicks)
             for (auto& p : mNodes)
             {
                 auto clock = p.second.mClock;
-                if (clock->getIOService().stopped())
+                if (clock->getIOContext().stopped())
                 {
                     continue;
                 }

@@ -9,8 +9,8 @@
 #include "main/Application.h"
 #include "main/Config.h"
 #include "medida/medida.h"
-#include "overlay/LoopbackPeer.h"
 #include "overlay/StellarXDR.h"
+#include "overlay/test/LoopbackPeer.h"
 #include "simulation/LoadGenerator.h"
 #include "test/TxTests.h"
 #include "util/Timer.h"
@@ -42,7 +42,7 @@ class Simulation
     ~Simulation();
 
     // updates all clocks in the simulation to the same time_point
-    void setCurrentTime(VirtualClock::time_point t);
+    void setCurrentVirtualTime(VirtualClock::time_point t);
 
     Application::pointer addNode(SecretKey nodeKey, SCPQuorumSet qSet,
                                  Config const* cfg = nullptr,

@@ -7,6 +7,7 @@
 #include "bucket/PublishQueueBuckets.h"
 #include "history/HistoryManager.h"
 #include "util/TmpDir.h"
+#include "work/Work.h"
 #include <memory>
 
 namespace medida
@@ -24,7 +25,8 @@ class HistoryManagerImpl : public HistoryManager
 {
     Application& mApp;
     std::unique_ptr<TmpDir> mWorkDir;
-    std::shared_ptr<Work> mPublishWork;
+    std::shared_ptr<BasicWork> mPublishWork;
+
     PublishQueueBuckets mPublishQueueBuckets;
     bool mPublishQueueBucketsFilled{false};
 
@@ -76,7 +78,7 @@ class HistoryManagerImpl : public HistoryManager
 
     HistoryArchiveState getLastClosedHistoryArchiveState() const override;
 
-    InferredQuorum inferQuorum() override;
+    InferredQuorum inferQuorum(uint32_t ledgerNum) override;
 
     std::string const& getTmpDir() override;
 

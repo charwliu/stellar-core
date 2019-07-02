@@ -6,6 +6,7 @@
 
 #include "crypto/ByteSlice.h"
 #include "crypto/SHA.h"
+#include "util/FileSystemException.h"
 #include "util/Fs.h"
 #include "util/Logging.h"
 #include "xdrpp/marshal.h"
@@ -50,7 +51,7 @@ class XDRInputFileStream
             msg += ", reason: ";
             msg += std::to_string(errno);
             CLOG(ERROR, "Fs") << msg;
-            throw std::runtime_error(msg);
+            throw FileSystemException(msg);
         }
 
         mSize = fs::size(mIn);
@@ -120,24 +121,42 @@ class XDROutputFileStream
     std::vector<char> mBuf;
 
   public:
+    XDROutputFileStream()
+    {
+        mOut.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    }
+
     void
     close()
     {
-        mOut.close();
+        try
+        {
+            mOut.close();
+        }
+        catch (std::ios_base::failure&)
+        {
+            std::string msg("failed to close XDR file");
+            msg += ", reason: ";
+            msg += std::to_string(errno);
+            throw FileSystemException(msg);
+        }
     }
 
     void
     open(std::string const& filename)
     {
-        mOut.open(filename, std::ofstream::binary | std::ofstream::trunc);
-        if (!mOut)
+        try
+        {
+            mOut.open(filename, std::ofstream::binary | std::ofstream::trunc);
+        }
+        catch (std::ios_base::failure&)
         {
             std::string msg("failed to open XDR file: ");
             msg += filename;
             msg += ", reason: ";
             msg += std::to_string(errno);
             CLOG(FATAL, "Fs") << msg;
-            throw std::runtime_error(msg);
+            throw FileSystemException(msg);
         }
     }
 
@@ -147,7 +166,7 @@ class XDROutputFileStream
     }
 
     template <typename T>
-    bool
+    void
     writeOne(T const& t, SHA256* hasher = nullptr, size_t* bytesPut = nullptr)
     {
         uint32_t sz = (uint32_t)xdr::xdr_size(t);
@@ -168,10 +187,11 @@ class XDROutputFileStream
         xdr::xdr_put p(mBuf.data() + 4, mBuf.data() + 4 + sz);
         xdr_argpack_archive(p, t);
 
-        if (!mOut.write(mBuf.data(), sz + 4))
-        {
-            return false;
-        }
+        // Note: most libraries implement ofstream::write by calling C function
+        // `fwrite`, which does not set errno, so there isn't much info about
+        // why the write failed.
+        mOut.write(mBuf.data(), sz + 4);
+
         if (hasher)
         {
             hasher->add(ByteSlice(mBuf.data(), sz + 4));
@@ -180,7 +200,6 @@ class XDROutputFileStream
         {
             *bytesPut += (sz + 4);
         }
-        return true;
     }
 };
 }

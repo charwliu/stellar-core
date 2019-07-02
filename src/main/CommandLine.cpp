@@ -8,13 +8,17 @@
 #include "main/Application.h"
 #include "main/ApplicationUtils.h"
 #include "main/Config.h"
+#include "main/ErrorMessages.h"
 #include "main/StellarCoreVersion.h"
 #include "main/dumpxdr.h"
-#include "main/fuzz.h"
 #include "scp/QuorumSetUtils.h"
-#include "test/test.h"
 #include "util/Logging.h"
 #include "util/optional.h"
+
+#ifdef BUILD_TESTS
+#include "test/fuzz.h"
+#include "test/test.h"
+#endif
 
 #include <iostream>
 #include <lib/clara.hpp>
@@ -189,6 +193,13 @@ disableBucketGCParser(bool& disableBucketGC)
         "keeps all, even old, buckets on disk");
 }
 
+clara::Opt
+historyLedgerNumber(uint32_t& ledgerNum)
+{
+    return clara::Opt{ledgerNum, "HISTORY-LEDGER"}["--history-ledger"](
+        "specify a ledger number to examine in history");
+}
+
 clara::Parser
 configurationParser(CommandLine::ConfigOption& configOption)
 {
@@ -260,7 +271,8 @@ parseCatchup(std::string const& catchup)
     try
     {
         return {parseLedger(catchup.substr(0, separatorIndex)),
-                parseLedgerCount(catchup.substr(separatorIndex + 1))};
+                parseLedgerCount(catchup.substr(separatorIndex + 1)),
+                CatchupConfiguration::Mode::OFFLINE};
     }
     catch (std::exception&)
     {
@@ -466,6 +478,17 @@ runCatchup(CommandLineArgs const& args)
             config.setNoListen();
             config.DISABLE_BUCKET_GC = disableBucketGC;
 
+            if (config.AUTOMATIC_MAINTENANCE_PERIOD.count() > 0 &&
+                config.AUTOMATIC_MAINTENANCE_COUNT > 0)
+            {
+                // If the user did not _disable_ maintenance, turn the dial up
+                // to be much more aggressive about running maintenance during a
+                // bulk catchup, otherwise the DB is likely to overflow with
+                // unwanted history.
+                config.AUTOMATIC_MAINTENANCE_PERIOD = std::chrono::seconds{30};
+                config.AUTOMATIC_MAINTENANCE_COUNT = 1000000;
+            }
+
             VirtualClock clock(VirtualClock::REAL_TIME);
             auto app = Application::create(clock, config, false);
             Json::Value catchupInfo;
@@ -497,11 +520,14 @@ int
 runCheckQuorum(CommandLineArgs const& args)
 {
     CommandLine::ConfigOption configOption;
-
-    return runWithHelp(args, {configurationParser(configOption)}, [&] {
-        checkQuorumIntersection(configOption.getConfig());
-        return 0;
-    });
+    uint32_t ledgerNum = 0;
+    return runWithHelp(
+        args,
+        {configurationParser(configOption), historyLedgerNumber(ledgerNum)},
+        [&] {
+            checkQuorumIntersection(configOption.getConfig(), ledgerNum);
+            return 0;
+        });
 }
 
 int
@@ -545,33 +571,6 @@ runForceSCP(CommandLineArgs const& args)
 }
 
 int
-runFuzz(CommandLineArgs const& args)
-{
-    el::Level logLevel{el::Level::Info};
-    std::vector<std::string> metrics;
-    std::string fileName;
-
-    return runWithHelp(args,
-                       {logLevelParser(logLevel), metricsParser(metrics),
-                        fileNameParser(fileName)},
-                       [&] {
-                           fuzz(fileName, logLevel, metrics);
-                           return 0;
-                       });
-}
-
-int
-runGenFuzz(CommandLineArgs const& args)
-{
-    std::string fileName;
-
-    return runWithHelp(args, {fileNameParser(fileName)}, [&] {
-        genfuzz(fileName);
-        return 0;
-    });
-}
-
-int
 runGenSeed(CommandLineArgs const& args)
 {
     return runWithHelp(args, {}, [&] {
@@ -600,22 +599,12 @@ int
 runInferQuorum(CommandLineArgs const& args)
 {
     CommandLine::ConfigOption configOption;
-
-    return runWithHelp(args, {configurationParser(configOption)}, [&] {
-        inferQuorumAndWrite(configOption.getConfig());
-        return 0;
-    });
-}
-
-int
-runLoadXDR(CommandLineArgs const& args)
-{
-    CommandLine::ConfigOption configOption;
-    std::string xdr;
-
+    uint32_t ledgerNum = 0;
     return runWithHelp(
-        args, {configurationParser(configOption), fileNameParser(xdr)}, [&] {
-            loadXdr(configOption.getConfig(), xdr);
+        args,
+        {configurationParser(configOption), historyLedgerNumber(ledgerNum)},
+        [&] {
+            inferQuorumAndWrite(configOption.getConfig(), ledgerNum);
             return 0;
         });
 }
@@ -627,6 +616,20 @@ runNewDB(CommandLineArgs const& args)
 
     return runWithHelp(args, {configurationParser(configOption)}, [&] {
         initializeDatabase(configOption.getConfig());
+        return 0;
+    });
+}
+
+int
+runUpgradeDB(CommandLineArgs const& args)
+{
+    CommandLine::ConfigOption configOption;
+
+    return runWithHelp(args, {configurationParser(configOption)}, [&] {
+        auto cfg = configOption.getConfig();
+        VirtualClock clock;
+        cfg.setNoListen();
+        Application::create(clock, cfg, false);
         return 0;
     });
 }
@@ -707,6 +710,7 @@ run(CommandLineArgs const& args)
                            catch (std::exception& e)
                            {
                                LOG(FATAL) << "Got an exception: " << e.what();
+                               LOG(FATAL) << REPORT_INTERNAL_BUG;
                                return 1;
                            }
                            // run outside of catch block so that we properly
@@ -757,16 +761,71 @@ runWriteQuorum(CommandLineArgs const& args)
 {
     CommandLine::ConfigOption configOption;
     std::string outputFile;
-
+    uint32_t ledgerNum = 0;
     return runWithHelp(
-        args, {configurationParser(configOption), outputFileParser(outputFile)},
+        args,
+        {configurationParser(configOption), historyLedgerNumber(ledgerNum),
+         outputFileParser(outputFile)},
         [&] {
-            writeQuorumGraph(configOption.getConfig(), outputFile);
+            writeQuorumGraph(configOption.getConfig(), outputFile, ledgerNum);
             return 0;
         });
 }
 
-optional<int>
+#ifdef BUILD_TESTS
+int
+runLoadXDR(CommandLineArgs const& args)
+{
+    CommandLine::ConfigOption configOption;
+    std::string xdr;
+
+    return runWithHelp(
+        args, {configurationParser(configOption), fileNameParser(xdr)}, [&] {
+            loadXdr(configOption.getConfig(), xdr);
+            return 0;
+        });
+}
+
+int
+runRebuildLedgerFromBuckets(CommandLineArgs const& args)
+{
+    CommandLine::ConfigOption configOption;
+
+    return runWithHelp(args, {configurationParser(configOption)}, [&] {
+        rebuildLedgerFromBuckets(configOption.getConfig());
+        return 0;
+    });
+}
+
+int
+runFuzz(CommandLineArgs const& args)
+{
+    el::Level logLevel{el::Level::Info};
+    std::vector<std::string> metrics;
+    std::string fileName;
+
+    return runWithHelp(args,
+                       {logLevelParser(logLevel), metricsParser(metrics),
+                        fileNameParser(fileName)},
+                       [&] {
+                           fuzz(fileName, logLevel, metrics);
+                           return 0;
+                       });
+}
+
+int
+runGenFuzz(CommandLineArgs const& args)
+{
+    std::string fileName;
+
+    return runWithHelp(args, {fileNameParser(fileName)}, [&] {
+        genfuzz(fileName);
+        return 0;
+    });
+}
+#endif
+
+int
 handleCommandLine(int argc, char* const* argv)
 {
     auto commandLine = CommandLine{
@@ -774,7 +833,7 @@ handleCommandLine(int argc, char* const* argv)
           "execute catchup from history archives without connecting to "
           "network",
           runCatchup},
-         {"check-quorum", "check quorum intersection from history",
+         {"check-quorum", "check quorum intersection of last network activity",
           runCheckQuorum},
          {"convert-id", "displays ID in all known forms", runConvertId},
          {"dump-xdr", "dump an XDR file, for debugging", runDumpXDR},
@@ -783,14 +842,11 @@ handleCommandLine(int argc, char* const* argv)
           "the local ledger rather than waiting to hear from the "
           "network",
           runForceSCP},
-         {"fuzz", "run a single fuzz input and exit", runFuzz},
-         {"gen-fuzz", "generate a random fuzzer input file", runGenFuzz},
          {"gen-seed", "generate and print a random node seed", runGenSeed},
          {"http-command", "send a command to local stellar-core",
           runHttpCommand},
          {"infer-quorum", "print a quorum set inferred from history",
           runInferQuorum},
-         {"load-xdr", "load an XDR bucket file, for testing", runLoadXDR},
          {"new-db", "creates or restores the DB to the genesis ledger",
           runNewDB},
          {"new-hist", "initialize history archives", runNewHist},
@@ -812,7 +868,17 @@ handleCommandLine(int argc, char* const* argv)
          {"sign-transaction",
           "add signature to transaction envelope, then quit",
           runSignTransaction},
+         {"upgrade-db", "upgade database schema to current version",
+          runUpgradeDB},
+#ifdef BUILD_TESTS
+         {"load-xdr", "load an XDR bucket file, for testing", runLoadXDR},
+         {"rebuild-ledger-from-buckets",
+          "rebuild the current database ledger from the bucket list",
+          runRebuildLedgerFromBuckets},
+         {"fuzz", "run a single fuzz input and exit", runFuzz},
+         {"gen-fuzz", "generate a random fuzzer input file", runGenFuzz},
          {"test", "execute test suite", runTest},
+#endif
          {"write-quorum", "print a quorum set graph from history",
           runWriteQuorum},
          {"version", "print version information", runVersion}}};
@@ -821,7 +887,7 @@ handleCommandLine(int argc, char* const* argv)
     auto command = commandLine.selectCommand(ajustedCommandLine.first);
     if (!command)
     {
-        return nullopt<int>();
+        command = commandLine.selectCommand("help");
     }
 
     auto exeName = "stellar-core";
@@ -831,17 +897,18 @@ handleCommandLine(int argc, char* const* argv)
     if (command->name() == "run")
     {
         // run outside of catch block so that we properly capture crashes
-        return make_optional<int>(command->run(args));
+        return command->run(args);
     }
 
     try
     {
-        return make_optional<int>(command->run(args));
+        return command->run(args);
     }
     catch (std::exception& e)
     {
         LOG(FATAL) << "Got an exception: " << e.what();
-        return make_optional<int>(1);
+        LOG(FATAL) << REPORT_INTERNAL_BUG;
+        return 1;
     }
 }
 }

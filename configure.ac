@@ -31,7 +31,7 @@ if test -z "${WFLAGS+set}"; then
    WFLAGS="$WFLAGS -Werror=unused-result"
 fi
 
-test "${CFLAGS+set}" || CFLAGS="-g -O2"
+test "${CFLAGS+set}" || CFLAGS="-g -O2 -fno-omit-frame-pointer"
 test "${CXXFLAGS+set}" || CXXFLAGS="$CFLAGS"
 
 AC_PROG_CC([clang gcc cc])
@@ -258,7 +258,6 @@ AC_SUBST(libmedida_CFLAGS)
 AC_SUBST(libmedida_LIBS)
 
 soci_CFLAGS='-isystem $(top_srcdir)/lib/soci/src/core'
-soci_CFLAGS="$soci_CFLAGS "'-isystem $(top_srcdir)/lib/soci/src/backends/sqlite3'
 soci_LIBS='$(top_builddir)/lib/libsoci.a'
 AC_SUBST(soci_CFLAGS)
 AC_SUBST(soci_LIBS)
@@ -275,12 +274,13 @@ if test x"$enable_postgres" != xno; then
     if test -n "$enable_postgres" -a -z "$have_postgres"; then
        AC_MSG_ERROR([Cannot find postgres library])
     fi
-    if test -n "$have_postgres"; then
-       backend=
-       soci_CFLAGS="$soci_CFLAGS "'-isystem $(top_srcdir)/lib/soci/src/backends/postgresql'
-    fi
 fi
 AM_CONDITIONAL(USE_POSTGRES, [test -n "$have_postgres"])
+
+AC_ARG_ENABLE(tests,
+    AS_HELP_STRING([--disable-tests],
+        [Disable building test suite]))
+AM_CONDITIONAL(BUILD_TESTS, [test x$enable_tests != xno])
 
 # Need this to pass through ccache for xdrpp, libsodium
 esc() {

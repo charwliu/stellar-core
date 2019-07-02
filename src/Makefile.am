@@ -8,14 +8,20 @@ include $(srcdir)/src.mk
 
 noinst_HEADERS = $(SRC_H_FILES)
 
+if BUILD_TESTS
+stellar_core_SOURCES = main/StellarCoreVersion.cpp $(SRC_CXX_FILES) $(SRC_TEST_CXX_FILES)
+else # !BUILD_TESTS
 stellar_core_SOURCES = main/StellarCoreVersion.cpp $(SRC_CXX_FILES)
+endif # !BUILD_TESTS
+
 stellar_core_LDADD = $(soci_LIBS) $(libmedida_LIBS)		\
 	$(top_builddir)/lib/lib3rdparty.a $(sqlite3_LIBS)	\
 	$(libpq_LIBS) $(xdrpp_LIBS) $(libsodium_LIBS)
 
 TESTDATA_DIR = testdata
-TEST_FILES = $(TESTDATA_DIR)/stellar-core_example.cfg $(TESTDATA_DIR)/stellar-core_standalone.cfg $(TESTDATA_DIR)/stellar-core_testnet.cfg \
-	     $(TESTDATA_DIR)/stellar-history.testnet.6714239.json $(TESTDATA_DIR)/stellar-history.livenet.15686975.json
+TEST_FILES = $(TESTDATA_DIR)/stellar-core_example.cfg $(TESTDATA_DIR)/stellar-core_standalone.cfg \
+             $(TESTDATA_DIR)/stellar-core_testnet.cfg $(TESTDATA_DIR)/stellar-core_testnet_legacy.cfg \
+	     $(TESTDATA_DIR)/stellar-history.testnet.6714239.json $(TESTDATA_DIR)/stellar-history.livenet.15686975.json $(TESTDATA_DIR)/stellar-core_example_validators.cfg
 
 BUILT_SOURCES = $(SRC_X_FILES:.x=.h) main/StellarCoreVersion.cpp $(TEST_FILES)
 
@@ -54,7 +60,7 @@ endif # !USE_POSTGRES
 
 if USE_CLANG_FORMAT
 format: always
-	cd $(srcdir) && $(CLANG_FORMAT) -style=file -i $(SRC_CXX_FILES) $(SRC_H_FILES)
+	cd $(srcdir) && $(CLANG_FORMAT) -style=file -i $(SRC_CXX_FILES) $(SRC_H_FILES) $(SRC_TEST_CXX_FILES) $(SRC_TEST_H_FILES)
 endif # USE_CLANG_FORMAT
 
 if USE_AFL_FUZZ

@@ -37,7 +37,10 @@ class LedgerManagerImpl : public LedgerManager
 {
     LedgerHeaderHistoryEntry mLastClosedLedger;
 
+  protected:
     Application& mApp;
+
+  private:
     medida::Timer& mTransactionApply;
     medida::Histogram& mTransactionCount;
     medida::Histogram& mOperationCount;
@@ -45,28 +48,23 @@ class LedgerManagerImpl : public LedgerManager
     medida::Timer& mLedgerClose;
     medida::Timer& mLedgerAgeClosed;
     medida::Counter& mLedgerAge;
+    medida::Counter& mPrefetchHitRate;
     VirtualClock::time_point mLastClose;
 
     medida::Counter& mSyncingLedgersSize;
-    SyncingLedgerChain mSyncingLedgers;
     uint32_t mCatchupTriggerLedger{0};
 
     CatchupState mCatchupState{CatchupState::NONE};
 
-    void initializeCatchup(LedgerCloseData const& ledgerData);
-    void continueCatchup(LedgerCloseData const& ledgerData);
-    void finalizeCatchup(LedgerCloseData const& ledgerData);
-
     void addToSyncingLedgers(LedgerCloseData const& ledgerData);
     void startCatchupIf(uint32_t lastReceivedLedgerSeq);
 
-    void historyCaughtup(asio::error_code const& ec,
-                         CatchupWork::ProgressState progressState,
-                         LedgerHeaderHistoryEntry const& lastClosed);
-    void applyBufferedLedgers();
+    void historyCaughtup(CatchupWork::ProgressState progressState,
+                         LedgerHeaderHistoryEntry const& lastClosed,
+                         CatchupConfiguration::Mode catchupMode);
 
     void processFeesSeqNums(std::vector<TransactionFramePtr>& txs,
-                            AbstractLedgerTxn& ltxOuter);
+                            AbstractLedgerTxn& ltxOuter, int64_t baseFee);
 
     void applyTransactions(std::vector<TransactionFramePtr>& txs,
                            AbstractLedgerTxn& ltx,
@@ -75,7 +73,8 @@ class LedgerManagerImpl : public LedgerManager
     void ledgerClosed(AbstractLedgerTxn& ltx);
 
     void storeCurrentLedger(LedgerHeader const& header);
-    void advanceLedgerPointers(LedgerHeader const& header);
+    void prefetchTransactionData(std::vector<TransactionFramePtr>& txs);
+    void prefetchTxSourceIds(std::vector<TransactionFramePtr>& txs);
 
     enum class CloseLedgerIfResult
     {
@@ -87,7 +86,23 @@ class LedgerManagerImpl : public LedgerManager
 
     State mState;
     void setState(State s);
+
+  protected:
+    virtual void transferLedgerEntriesToBucketList(AbstractLedgerTxn& ltx,
+                                                   uint32_t ledgerSeq,
+                                                   uint32_t ledgerVers);
+
+    SyncingLedgerChain mSyncingLedgers;
+
+    void applyBufferedLedgers();
     void setCatchupState(CatchupState s);
+    void advanceLedgerPointers(LedgerHeader const& header);
+
+    void initializeCatchup(LedgerCloseData const& ledgerData);
+    void continueCatchup(LedgerCloseData const& ledgerData);
+    void finalizeCatchup(LedgerCloseData const& ledgerData);
+    void logTxApplyMetrics(AbstractLedgerTxn& ltx, size_t numTxs,
+                           size_t numOps);
 
   public:
     LedgerManagerImpl(Application& app);
@@ -119,8 +134,7 @@ class LedgerManagerImpl : public LedgerManager
 
     Database& getDatabase() override;
 
-    void startCatchup(CatchupConfiguration configuration,
-                      bool manualCatchup) override;
+    void startCatchup(CatchupConfiguration configuration) override;
 
     void closeLedger(LedgerCloseData const& ledgerData) override;
     void deleteOldEntries(Database& db, uint32_t ledgerSeq,

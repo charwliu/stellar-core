@@ -2,21 +2,21 @@
 #include "crypto/Hex.h"
 #include "crypto/SHA.h"
 #include "herder/HerderImpl.h"
+#include "herder/HerderPersistence.h"
 #include "herder/HerderUtils.h"
 #include "herder/TxSetFrame.h"
 #include "main/Application.h"
 #include "main/Config.h"
+#include "overlay/OverlayManager.h"
 #include "scp/QuorumSetUtils.h"
+#include "scp/Slot.h"
 #include "util/Logging.h"
-#include <overlay/OverlayManager.h>
-#include <scp/Slot.h>
 #include <xdrpp/marshal.h>
 
 using namespace std;
 
 #define QSET_CACHE_SIZE 10000
 #define TXSET_CACHE_SIZE 10000
-#define NODES_QUORUM_CACHE_SIZE 1000
 
 namespace stellar
 {
@@ -30,7 +30,8 @@ PendingEnvelopes::PendingEnvelopes(Application& app, HerderImpl& herder)
     , mQuorumSetFetcher(app, [](Peer::pointer peer,
                                 Hash hash) { peer->sendGetQuorumSet(hash); })
     , mTxSetCache(TXSET_CACHE_SIZE)
-    , mNodesInQuorum(NODES_QUORUM_CACHE_SIZE)
+    , mRebuildQuorum(true)
+    , mQuorumTracker(mHerder.getSCP())
     , mProcessedCount(
           app.getMetrics().NewCounter({"scp", "pending", "processed"}))
     , mDiscardedCount(
@@ -66,12 +67,10 @@ PendingEnvelopes::peerDoesntHave(MessageType type, Hash const& itemID,
 void
 PendingEnvelopes::addSCPQuorumSet(Hash hash, const SCPQuorumSet& q)
 {
+    CLOG(TRACE, "Herder") << "Add SCPQSet " << hexAbbrev(hash);
     assert(isQuorumSetSane(q, false));
 
-    CLOG(TRACE, "Herder") << "Add SCPQSet " << hexAbbrev(hash);
-
     auto qset = std::make_shared<SCPQuorumSet>(q);
-    mNodesInQuorum.clear();
     mQsetCache.put(hash, qset);
 
     mQuorumSetFetcher.recv(hash);
@@ -161,28 +160,14 @@ PendingEnvelopes::recvTxSet(Hash hash, TxSetFramePtr txset)
 }
 
 bool
-PendingEnvelopes::isNodeInQuorum(NodeID const& node)
+PendingEnvelopes::isNodeDefinitelyInQuorum(NodeID const& node)
 {
-    bool res;
-
-    res = mNodesInQuorum.exists(node);
-    if (res)
+    if (mRebuildQuorum)
     {
-        res = mNodesInQuorum.get(node);
+        rebuildQuorumTrackerState();
+        mRebuildQuorum = false;
     }
-    else
-    {
-        // search through the known slots
-        SCP::TriBool r = mHerder.getSCP().isNodeInQuorum(node);
-
-        // consider a node in quorum if it's either in quorum
-        // or we don't know if it is (until we get further evidence)
-        res = (r != SCP::TB_FALSE);
-
-        mNodesInQuorum.put(node, res);
-    }
-
-    return res;
+    return mQuorumTracker.isNodeDefinitelyInQuorum(node);
 }
 
 // called from Peer and when an Item tracker completes
@@ -190,7 +175,7 @@ Herder::EnvelopeStatus
 PendingEnvelopes::recvSCPEnvelope(SCPEnvelope const& envelope)
 {
     auto const& nodeID = envelope.statement.nodeID;
-    if (!isNodeInQuorum(nodeID))
+    if (!isNodeDefinitelyInQuorum(nodeID))
     {
         CLOG(DEBUG, "Herder")
             << "Dropping envelope from "
@@ -305,6 +290,9 @@ PendingEnvelopes::isDiscarded(SCPEnvelope const& envelope) const
 void
 PendingEnvelopes::envelopeReady(SCPEnvelope const& envelope)
 {
+    CLOG(TRACE, "Herder") << "Envelope ready i:" << envelope.statement.slotIndex
+                          << " t:" << envelope.statement.pledges.type();
+
     StellarMessage msg;
     msg.type(SCP_MESSAGE);
     msg.envelope() = envelope;
@@ -312,9 +300,6 @@ PendingEnvelopes::envelopeReady(SCPEnvelope const& envelope)
 
     mEnvelopes[envelope.statement.slotIndex].mReadyEnvelopes.push_back(
         envelope);
-
-    CLOG(TRACE, "Herder") << "Envelope ready i:" << envelope.statement.slotIndex
-                          << " t:" << envelope.statement.pledges.type();
 }
 
 bool
@@ -445,8 +430,8 @@ PendingEnvelopes::eraseBelow(uint64 slotIndex)
 void
 PendingEnvelopes::slotClosed(uint64 slotIndex)
 {
-    // force recomputing the quorums
-    mNodesInQuorum.clear();
+    // force recomputing the transitive quorum
+    mRebuildQuorum = true;
 
     // stop processing envelopes & downloads for the slot falling off the
     // window
@@ -484,8 +469,22 @@ PendingEnvelopes::getQSet(Hash const& hash)
     {
         return mQsetCache.get(hash);
     }
-
-    return SCPQuorumSetPtr();
+    SCPQuorumSetPtr qset;
+    auto& scp = mHerder.getSCP();
+    if (hash == scp.getLocalNode()->getQuorumSetHash())
+    {
+        qset = make_shared<SCPQuorumSet>(scp.getLocalQuorumSet());
+    }
+    else
+    {
+        auto& db = mApp.getDatabase();
+        qset = HerderPersistence::getQuorumSet(db, db.getSession(), hash);
+    }
+    if (qset)
+    {
+        mQsetCache.put(hash, qset);
+    }
+    return qset;
 }
 
 Json::Value
@@ -520,5 +519,63 @@ PendingEnvelopes::getJsonInfo(size_t limit)
         }
     }
     return ret;
+}
+
+void
+PendingEnvelopes::rebuildQuorumTrackerState()
+{
+    // rebuild quorum information using data sources starting with the
+    // freshest source
+    mQuorumTracker.rebuild([&](NodeID const& id) -> SCPQuorumSetPtr {
+        SCPQuorumSetPtr res;
+        if (id == mHerder.getSCP().getLocalNodeID())
+        {
+            res = getQSet(mHerder.getSCP().getLocalNode()->getQuorumSetHash());
+        }
+        else
+        {
+            auto m = mHerder.getSCP().getLatestMessage(id);
+            if (m != nullptr)
+            {
+                auto h =
+                    Slot::getCompanionQuorumSetHashFromStatement(m->statement);
+                res = getQSet(h);
+            }
+            if (res == nullptr)
+            {
+                // see if we had some information for that node
+                auto& db = mApp.getDatabase();
+                auto h = HerderPersistence::getNodeQuorumSet(
+                    db, db.getSession(), id);
+                if (h)
+                {
+                    res = getQSet(*h);
+                }
+            }
+        }
+        return res;
+    });
+}
+
+QuorumTracker::QuorumMap const&
+PendingEnvelopes::getCurrentlyTrackedQuorum() const
+{
+    return mQuorumTracker.getQuorum();
+}
+
+void
+PendingEnvelopes::envelopeProcessed(SCPEnvelope const& env)
+{
+    auto const& st = env.statement;
+    auto const& id = st.nodeID;
+
+    auto h = Slot::getCompanionQuorumSetHashFromStatement(st);
+
+    SCPQuorumSetPtr qset = getQSet(h);
+    if (!mQuorumTracker.expand(id, qset))
+    {
+        // could not expand quorum, queue up a rebuild
+        mRebuildQuorum = true;
+    }
 }
 }
